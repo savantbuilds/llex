@@ -1,176 +1,171 @@
+/* Right-click mini toolbar.
+   Kept in its own file because it is the only component that floats over the
+   document and must sit above every page box. */
+
 .mini-toolbar {
-    background-color: #2b2b2b;
-    border: 1px solid #444;
-    border-radius: 6px;
-    box-shadow: 0 4px 12px rgba(0,0,0,0.4);
-    padding: 6px;
-    display: flex;
-    flex-direction: row;
-    font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-    color: #e0e0e0;
-    user-select: none;
+  position: absolute;
+  z-index: 10000;
+  display: flex;
+  flex-direction: row;
+  gap: 6px;
+  align-items: stretch;
+  padding: 6px;
+  border: 1px solid #444;
+  border-radius: 6px;
+  background: #2b2b2b;
+  color: var(--chrome-fg, #e0e0e0);
+  font-family: "Segoe UI", Tahoma, Geneva, Verdana, sans-serif;
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.45);
+  user-select: none;
 }
 
-.mt-left-block {
-    display: flex;
-    flex-direction: column;
-    justify-content: space-between;
+.mt-left-block,
+.mt-right-block {
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  gap: 4px;
 }
 
 .mt-row {
-    display: flex;
-    flex-direction: row;
-    align-items: center;
-    gap: 4px;
-}
-
-.mt-bottom-row {
-    margin-top: 4px;
+  display: flex;
+  flex-direction: row;
+  gap: 4px;
+  align-items: center;
 }
 
 .mt-divider {
-    width: 1px;
-    background-color: #555;
-    margin: 0 6px;
-    align-self: stretch;
-}
-
-.mt-right-block {
-    display: flex;
-    align-items: center;
-    justify-content: center;
+  align-self: stretch;
+  width: 1px;
+  background: #555;
 }
 
 .mt-btn {
-    background: transparent;
-    border: 1px solid transparent;
-    color: #e0e0e0;
-    border-radius: 4px;
-    cursor: pointer;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    transition: background 0.15s, border 0.15s;
-    font-size: 13px;
-    padding: 4px;
-    position: relative;
-    outline: none;
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 4px;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--chrome-fg, #e0e0e0);
+  font-size: 13px;
+  cursor: pointer;
+  transition: background 0.12s ease, border-color 0.12s ease;
 }
 
 .mt-btn:hover {
-    background: #444;
-    border-color: #666;
+  border-color: #666;
+  background: #444;
 }
 
-.mt-btn:active, .mt-btn.active {
-    background: #555;
-    border-color: #777;
+.mt-btn:active,
+.mt-btn.active,
+.mt-btn[aria-pressed="true"] {
+  border-color: #777;
+  background: #555;
 }
 
 .mt-icon-btn {
-    width: 26px;
-    height: 26px;
-    font-family: serif;
-    font-weight: bold;
-    padding: 0;
+  width: 28px;
+  height: 26px;
+  padding: 0;
+  font-family: serif;
+  font-weight: bold;
 }
 
-.mt-bold { font-weight: bold; font-family: sans-serif; }
-.mt-italic { font-style: italic; font-family: serif; }
-.mt-underline { text-decoration: underline; font-family: sans-serif; }
+.mt-bold {
+  font-family: var(--ui-font, sans-serif);
+  font-weight: bold;
+}
+
+.mt-italic {
+  font-style: italic;
+}
+
+.mt-underline {
+  text-decoration: underline;
+}
 
 .mt-vertical-btn {
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    justify-content: center;
-    padding: 4px 8px;
-    height: 100%;
-    min-width: 60px;
-    border: 1px solid transparent;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 62px;
+  padding: 4px 8px;
 }
 
 .mt-label {
-    font-size: 10px;
-    margin-top: 4px;
-    text-align: center;
-    line-height: 1.1;
-    color: #e0e0e0;
+  font-size: 10px;
+  line-height: 1.1;
+  text-align: center;
+  white-space: nowrap;
 }
 
 .mt-dropdown {
-    background: #1e1e1e;
-    color: #e0e0e0;
-    border: 1px solid #555;
-    border-radius: 4px;
-    padding: 0 4px;
-    font-size: 12px;
-    height: 24px;
-    cursor: pointer;
-    outline: none;
+  height: 24px;
+  padding: 0 4px;
+  border: 1px solid #555;
+  border-radius: 4px;
+  background: #1e1e1e;
+  color: var(--chrome-fg, #e0e0e0);
+  font-size: 12px;
 }
 
 .mt-dropdown:hover {
-    border-color: #777;
+  border-color: #777;
 }
 
-.mt-dropdown:focus {
-    border-color: #0e639c;
+.mt-dropdown:focus-visible {
+  border-color: #0e639c;
+  outline: none;
+}
+
+.mt-dropdown option {
+  background: #252526;
+  color: var(--chrome-fg, #e0e0e0);
 }
 
 .mt-font-family {
-    width: 140px;
+  width: 140px;
 }
 
 .mt-font-size {
-    width: 50px;
-}
-
-.mt-sup {
-    font-size: 9px;
-    vertical-align: super;
-    margin-left: 1px;
+  width: 52px;
 }
 
 .mt-icon-text {
-    font-size: 14px;
-    line-height: 1;
+  font-size: 14px;
+  line-height: 1;
 }
 
 .mt-color-bar {
-    position: absolute;
-    bottom: 2px;
-    left: 4px;
-    right: 4px;
-    height: 3px;
-    border-radius: 1px;
+  position: absolute;
+  inset-inline: 4px;
+  bottom: 2px;
+  height: 3px;
+  border-radius: 1px;
 }
 
-.mt-color-bar.yellow { background-color: #f4b41a; }
-.mt-color-bar.red { background-color: #e51400; }
+.mt-color-bar.yellow {
+  background: #f4b41a;
+}
+
+.mt-color-bar.red {
+  background: #e51400;
+}
 
 #context-menu-standard {
-    background-color: #252526;
-    border: 1px solid #444;
-    box-shadow: 0 4px 6px rgba(0, 0, 0, 0.3);
-    border-radius: 4px;
-    min-width: 150px;
-    padding: 4px 0;
-    display: none;
-    z-index: 10001;
+  position: absolute;
+  z-index: 10000;
+  min-width: 150px;
+  padding: 4px 0;
+  border: 1px solid #444;
+  border-radius: 4px;
+  background: #252526;
+  box-shadow: 0 4px 6px rgba(0, 0, 0, 0.3);
 }
 
 #context-menu-standard .dropdown-item {
-    color: #cccccc;
-    padding: 6px 16px;
-    cursor: pointer;
-    font-size: 13px;
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-}
-
-#context-menu-standard .dropdown-item:hover {
-    background-color: #0e639c;
-    color: white;
+  font-size: 13px;
 }

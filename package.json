@@ -1,0 +1,29 @@
+{
+  "name": "llex",
+  "version": "0.2.0",
+  "private": true,
+  "description": "Editor front end for LLex: a local-first, paginated word processor.",
+  "license": "MIT",
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "build": "node build.mjs --production",
+    "build:dev": "node build.mjs",
+    "watch": "node build.mjs --watch",
+    "test": "node --test tests/js/*.test.mjs",
+    "check": "npm run build && npm run test"
+  },
+  "dependencies": {
+    "@tiptap/core": "^3.22.1",
+    "@tiptap/extension-document": "^3.22.1",
+    "@tiptap/extension-text-align": "^3.22.1",
+    "@tiptap/extension-underline": "^3.22.1",
+    "@tiptap/pm": "^3.22.1",
+    "@tiptap/starter-kit": "^3.22.1"
+  },
+  "devDependencies": {
+    "esbuild": "^0.27.5"
+  }
+}

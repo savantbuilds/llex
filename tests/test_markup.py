@@ -221,6 +221,10 @@ class TestWordCount:
             ("  spaced   out  ", 2),
             ("under_score counts as one", 4),
             ("123 456", 2),
+            # The frontend must agree with these numbers exactly; see
+            # tests/js/wordcount.test.mjs for the mirrored expectations.
+            ("\u4e2d\u6587 \u6587\u5b57", 2),
+            ("caf\u00e9 na\u00efve", 2),
         ],
     )
     def test_counts(self, text: str, expected: int) -> None:

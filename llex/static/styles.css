@@ -1,432 +1,941 @@
+/* ==========================================================================
+   LLex editor styles
+
+   Layering: tokens (:root) -> reset -> chrome (menus, ribbon, panels) ->
+   page geometry -> typography -> components -> utilities.
+
+   The page geometry is the load-bearing part. `.tiptap .page` is a fixed
+   816x1056 px box (8.5x11 in at 96 dpi) that the pagination engine measures
+   against, so any change to its width, height or padding invalidates every
+   stored page break.
+   ========================================================================== */
+
 :root {
-    --bg-dark: #f0f0f0;
-    --paper-bg: white;
-    --ribbon-bg: #2b2b2b;
-    --text-color: black;
-    --border-color: #444;
+  color-scheme: light;
+
+  --bg-dark: #f0f0f0;
+  --paper-bg: #ffffff;
+  --ribbon-bg: #2b2b2b;
+  --text-color: #000000;
+  --border-color: #444444;
+
+  --chrome-fg: #e0e0e0;
+  --chrome-muted: #a0a0a0;
+  --chrome-bg: #2b2b2b;
+  --chrome-raised: #3a3d41;
+  --chrome-hover: #505357;
+  --accent: #0e639c;
+  --accent-bright: #1177bb;
+  --danger: #e51400;
+  --warning: #f4b41a;
+
+  --page-width: 816px;
+  --page-height: 1056px;
+  --page-gap: 40px;
+  --page-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+
+  /* Overridden by the settings module. */
+  --margin-top: 96px;
+  --margin-right: 96px;
+  --margin-bottom: 96px;
+  --margin-left: 96px;
+
+  --ui-font: "Segoe UI", Tahoma, Geneva, Verdana, sans-serif;
+  --doc-font: Calibri, Arial, sans-serif;
+  --doc-size: 11pt;
+  --doc-leading: 1.5;
+  --zoom: 1;
+
+  --sidebar-width: 300px;
+  --outline-width: 260px;
+  --status-height: 26px;
 }
 
-body, html {
-    margin: 0;
-    padding: 0;
-    height: 100vh;
-    font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-    background-color: var(--bg-dark);
-    display: flex;
-    flex-direction: column;
-    overflow: hidden;
+/* ==========================================================================
+   Reset
+   ========================================================================== */
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  height: 100%;
+  margin: 0;
+  overflow: hidden;
+}
+
+body {
+  display: flex;
+  flex-direction: column;
+  font-family: var(--ui-font);
+  font-size: 13px;
+  background: var(--bg-dark);
+  color: #111;
+}
+
+button,
+select,
+input,
+textarea {
+  font: inherit;
+  color: inherit;
+}
+
+kbd {
+  margin-inline-start: auto;
+  padding-inline-start: 16px;
+  font-family: ui-monospace, Consolas, monospace;
+  font-size: 11px;
+  color: var(--chrome-muted);
+}
+
+.skip-link {
+  position: absolute;
+  inset-inline-start: -9999px;
+  z-index: 10000;
+  padding: 8px 16px;
+  background: var(--accent);
+  color: #fff;
+  text-decoration: none;
+}
+
+.skip-link:focus {
+  inset-inline-start: 8px;
+  top: 8px;
+}
+
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+/* A visible focus ring everywhere, since the whole UI is keyboard reachable. */
+:focus-visible {
+  outline: 2px solid var(--accent-bright);
+  outline-offset: 1px;
 }
 
 #app {
-    display: flex;
-    flex-direction: column;
-    height: 100vh;
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
 }
 
-/* Menu Bar */
+/* ==========================================================================
+   Menu bar
+   ========================================================================== */
+
 #menu-bar {
-    background-color: #2b2b2b;
-    display: flex;
-    padding: 0 8px;
-    font-size: 13px;
-    user-select: none;
-    z-index: 1000;
+  display: flex;
+  padding: 0 6px;
+  font-size: 13px;
+  user-select: none;
+  background: var(--chrome-bg);
+  z-index: 1000;
 }
 
 .menu-item {
-    position: relative;
+  position: relative;
 }
 
-.menu-title {
-    color: #cccccc;
-    padding: 6px 10px;
-    display: block;
-    cursor: default;
-    border-radius: 4px;
+.menu-title,
+.nested-trigger {
+  display: block;
+  width: 100%;
+  padding: 6px 10px;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: #cccccc;
+  text-align: start;
+  cursor: default;
 }
 
-.menu-item:hover .menu-title {
-    background-color: rgba(255, 255, 255, 0.1);
-    color: white;
+.menu-item:hover > .menu-title,
+.menu-title[aria-expanded="true"] {
+  background: rgba(255, 255, 255, 0.1);
+  color: #fff;
 }
 
-.dropdown-menu {
-    display: none;
-    position: absolute;
-    top: 100%;
-    left: 0;
-    background-color: #252526;
-    border: 1px solid #444;
-    box-shadow: 0 4px 6px rgba(0, 0, 0, 0.3);
-    border-radius: 4px;
-    min-width: 220px;
-    padding: 4px 0;
-    z-index: 1001;
+.dropdown-menu,
+.nested-menu {
+  position: absolute;
+  top: 100%;
+  inset-inline-start: 0;
+  display: none;
+  min-width: 220px;
+  padding: 4px 0;
+  border: 1px solid #444;
+  border-radius: 4px;
+  background: #252526;
+  box-shadow: 0 4px 6px rgba(0, 0, 0, 0.3);
+  z-index: 1001;
 }
 
-.menu-item:hover .dropdown-menu {
-    display: block;
+.menu-item:hover > .dropdown-menu,
+.menu-item:focus-within > .dropdown-menu,
+.dropdown-menu:hover {
+  display: block;
 }
 
 .dropdown-item {
-    color: #cccccc;
-    padding: 6px 16px;
-    cursor: pointer;
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  width: 100%;
+  padding: 6px 16px;
+  border: 0;
+  background: transparent;
+  color: #cccccc;
+  text-align: start;
+  cursor: pointer;
 }
 
-.dropdown-item:hover {
-    background-color: #0e639c;
-    color: white;
+.dropdown-item:hover,
+.dropdown-item:focus-visible {
+  background: var(--accent);
+  color: #fff;
+}
+
+.dropdown-item[aria-checked="true"]::before {
+  content: "✓";
+  margin-inline-end: -8px;
+  color: var(--warning);
 }
 
 .dropdown-divider {
-    height: 1px;
-    background-color: #444;
-    margin: 4px 0;
+  height: 1px;
+  margin: 4px 0;
+  background: #444;
 }
 
 .nested-dropdown {
-    position: relative;
+  position: relative;
+  padding: 0;
+}
+
+.nested-trigger {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
 }
 
 .nested-menu {
-    display: none;
-    position: absolute;
-    top: -5px;
-    left: 100%;
-    background-color: #252526;
-    border: 1px solid #444;
-    box-shadow: 0 4px 6px rgba(0, 0, 0, 0.3);
-    border-radius: 4px;
-    min-width: 200px;
-    padding: 4px 0;
+  top: -5px;
+  inset-inline-start: 100%;
+  min-width: 240px;
 }
 
-.nested-dropdown:hover .nested-menu {
-    display: block;
+.nested-dropdown:hover > .nested-menu,
+.nested-dropdown:focus-within > .nested-menu {
+  display: block;
 }
 
 .arrow {
-    font-size: 10px;
-    color: #888;
-}
-.dropdown-item:hover .arrow {
-    color: white;
+  font-size: 10px;
+  color: #888;
 }
 
-/* Ribbon */
+.dropdown-item:hover .arrow {
+  color: #fff;
+}
+
+/* ==========================================================================
+   Ribbon
+   ========================================================================== */
+
 #ribbon {
-    background-color: var(--ribbon-bg);
-    border-bottom: 1px solid var(--border-color);
-    padding: 8px 12px;
-    display: flex;
-    align-items: center;
-    user-select: none;
+  display: flex;
+  align-items: center;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border-color);
+  background: var(--ribbon-bg);
+  user-select: none;
 }
 
 .toolbar {
-    display: flex;
-    gap: 6px;
-    align-items: center;
-    flex-wrap: wrap;
-    width: 100%;
+  display: flex;
+  flex: 1;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
 }
 
 .toolbar-group {
-    display: flex;
-    gap: 4px;
-    align-items: center;
-    background: rgba(255, 255, 255, 0.03);
-    padding: 4px;
-    border-radius: 6px;
-    border: 1px solid rgba(255, 255, 255, 0.05);
+  display: flex;
+  gap: 4px;
+  align-items: center;
+  padding: 4px;
+  border: 1px solid rgba(255, 255, 255, 0.05);
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.03);
 }
 
-.btn {
-    background: transparent;
-    color: #e0e0e0;
-    border: 1px solid transparent;
-    padding: 6px 10px;
-    border-radius: 4px;
-    cursor: pointer;
-    font-size: 13px;
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    transition: all 0.15s ease;
-}
-
-.btn:hover {
-    background: rgba(255, 255, 255, 0.1);
-    box-shadow: 0 1px 2px rgba(0, 0, 0, 0.2);
-}
-
-.btn:active {
-    background: rgba(255, 255, 255, 0.05);
-    transform: translateY(1px);
-}
-
-.btn.active {
-    background: rgba(14, 99, 156, 0.4);
-    color: #fff;
-    border-color: rgba(14, 99, 156, 0.8);
-}
-
-.btn.btn-primary {
-    background-color: #0e639c;
-    color: white;
-    border: 1px solid #1177bb;
-}
-
-.btn.btn-primary:hover {
-    background-color: #1177bb;
-}
-
-.icon-btn {
-    width: 32px;
-    height: 32px;
-    padding: 0;
-    font-size: 15px;
-}
-
-.text-btn {
-    padding: 4px 8px;
-    font-weight: 500;
-}
-
-.dropdown {
-    background: #333;
-    color: #e0e0e0;
-    border: 1px solid #555;
-    padding: 4px 8px;
-    border-radius: 4px;
-    font-size: 13px;
-    cursor: pointer;
-    outline: none;
-    height: 30px;
-}
-
-.dropdown:hover {
-    border-color: #777;
-}
-
-.dropdown:focus {
-    border-color: #0e639c;
+.toolbar-spacer {
+  flex: 1 1 auto;
 }
 
 .separator {
-    width: 1px;
-    height: 20px;
-    background: var(--border-color);
-    margin: 0 6px;
+  width: 1px;
+  height: 20px;
+  margin: 0 6px;
+  background: var(--border-color);
 }
 
-/* Main Content */
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 6px 10px;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--chrome-fg);
+  font-size: 13px;
+  cursor: pointer;
+  transition: background 0.15s ease, transform 0.05s ease;
+}
+
+.btn:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.1);
+}
+
+.btn:active:not(:disabled) {
+  transform: translateY(1px);
+}
+
+.btn:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.btn.active,
+.btn[aria-pressed="true"] {
+  border-color: rgba(14, 99, 156, 0.8);
+  background: rgba(14, 99, 156, 0.4);
+  color: #fff;
+}
+
+.btn-primary {
+  border-color: var(--accent-bright);
+  background: var(--accent);
+  color: #fff;
+}
+
+.btn-primary:hover:not(:disabled) {
+  background: var(--accent-bright);
+}
+
+.btn-secondary {
+  border-color: #555;
+  background: var(--chrome-raised);
+  color: #fff;
+}
+
+.btn-secondary:hover:not(:disabled) {
+  background: var(--chrome-hover);
+}
+
+.icon-btn {
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  font-size: 15px;
+}
+
+.text-btn {
+  padding: 4px 8px;
+  font-weight: 500;
+}
+
+.dropdown {
+  height: 30px;
+  padding: 4px 8px;
+  border: 1px solid #555;
+  border-radius: 4px;
+  background: #333;
+  color: var(--chrome-fg);
+  cursor: pointer;
+}
+
+.dropdown:hover {
+  border-color: #777;
+}
+
+.dropdown:focus-visible {
+  border-color: var(--accent-bright);
+  outline: none;
+}
+
+.dropdown option {
+  background: #252526;
+  color: var(--chrome-fg);
+}
+
+/* ==========================================================================
+   Main content and side panels
+   ========================================================================== */
+
 #main-content {
-    display: flex;
-    flex: 1;
-    overflow: hidden;
+  position: relative;
+  display: flex;
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
 }
 
-/* Editor Scroll Container */
 .editor-scroll-container {
-    flex: 1;
-    overflow-y: auto;
-    background-color: var(--bg-dark);
-    padding: 40px 0;
+  flex: 1;
+  min-width: 0;
+  padding: 40px 0;
+  overflow-y: auto;
+  background: var(--bg-dark);
+  scrollbar-gutter: stable;
 }
 
-/* 8.5 x 11 Paper aspect ratio and pagination style */
-.tiptap {
-    box-sizing: border-box;
-    width: 100%;
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    gap: 40px;
-    outline: none;
-    font-size: 16px;
-    line-height: 1.6;
-    padding-bottom: 60px; /* Provides visual breathing room at the bottom of the scroll container */
+#sidebar,
+#left-sidebar {
+  display: flex;
+  flex-direction: column;
+  flex: 0 0 auto;
+  width: 0;
+  gap: 10px;
+  padding: 0;
+  overflow: hidden;
+  background: #252526;
+  color: #cccccc;
+  transition: width 0.25s ease, padding 0.25s ease;
 }
-
-.tiptap .page {
-    box-sizing: border-box;
-    width: 816px;
-    height: 1056px;
-    min-height: 1056px;
-    max-height: 1056px;
-    background-color: var(--paper-bg);
-    color: var(--text-color);
-    padding: var(--margin-top, 96px) var(--margin-right, 96px) var(--margin-bottom, 96px) var(--margin-left, 96px); 
-    box-shadow: 0 4px 12px rgba(0,0,0,0.15);
-    overflow: hidden;
-    position: relative;
-}
-
-.tiptap p { margin-top: 0; }
-
-/* Let's simulate page breaks visually with CSS */
-/* We will do draft view mode or continuous page drops via CSS */
-@media print {
-    body { background: none; }
-}
-
-/* Sidebars */
-#sidebar, #left-sidebar {
-    width: 0;
-    overflow: hidden;
-    background-color: #252526;
-    color: #ccc;
-    padding: 0;
-    display: flex;
-    flex-direction: column;
-    gap: 10px;
-    transition: width 0.3s ease, padding 0.3s ease;
-}
-
-#sidebar { border-left: none; }
-#left-sidebar { border-right: none; }
 
 #sidebar.open {
-    width: 280px;
-    padding: 16px;
-    border-left: 1px solid var(--border-color);
+  width: var(--sidebar-width);
+  padding: 16px;
+  border-inline-start: 1px solid var(--border-color);
 }
 
 #left-sidebar.open {
-    width: 250px;
-    padding: 16px;
-    border-right: 1px solid var(--border-color);
+  width: var(--outline-width);
+  padding: 16px;
+  border-inline-end: 1px solid var(--border-color);
 }
 
-#sidebar h3, #left-sidebar h3 { margin-top: 0; color: white; white-space: nowrap; }
-
-#sidebar button {
-    background: #3a3d41;
-    color: white;
-    border: none;
-    padding: 8px;
-    cursor: pointer;
-    border-radius: 4px;
-    white-space: nowrap;
-}
-#sidebar button:hover { background: #505357; }
-
-/* Floating Outline Button */
-.btn-floating-outline {
-    position: absolute;
-    top: 16px;
-    left: 16px;
-    z-index: 100;
-    background: #3c3f41;
-    color: #ccc;
-    border: 1px solid #555;
-    padding: 6px 12px;
-    border-radius: 4px;
-    cursor: pointer;
-    font-size: 13px;
-    transition: background 0.2s ease, opacity 0.2s ease;
+#sidebar h2,
+#left-sidebar h2 {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: #fff;
+  white-space: nowrap;
 }
 
-.btn-floating-outline:hover {
-    background: #505357;
+.field-label {
+  margin-top: 4px;
+  font-size: 11px;
+  color: var(--chrome-muted);
 }
-
-#left-sidebar.open ~ .btn-floating-outline {
-    /* Optional: hide or move the button when the sidebar is open, lets just keep it here to close it back */
-}
-#btn-ask { background: #0e639c !important; }
 
 #sidebar textarea {
-    background: #1e1e1e;
-    color: white;
-    border: 1px solid var(--border-color);
-    padding: 8px;
-    border-radius: 4px;
-    resize: vertical;
-    min-height: 80px;
-    font-family: inherit;
+  min-height: 72px;
+  padding: 8px;
+  border: 1px solid var(--border-color);
+  border-radius: 4px;
+  background: #1e1e1e;
+  color: #fff;
+  resize: vertical;
 }
 
-/* Status Bar */
-#status-bar {
-    background-color: #007acc;
-    color: white;
-    padding: 4px 12px;
-    font-size: 12px;
+.llm-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
 }
 
-/* GOOGLE DOCS STYLE SYSTEM - TYPOGRAPHY */
+.llm-status {
+  margin: 0;
+  font-size: 11px;
+  line-height: 1.4;
+  color: var(--chrome-muted);
+}
+
+.llm-status[data-online="true"] {
+  color: #7fd18a;
+}
+
+.llm-output {
+  flex: 1 1 auto;
+  min-height: 90px;
+  padding: 8px;
+  overflow-y: auto;
+  border: 1px solid #3a3a3a;
+  border-radius: 4px;
+  background: #1e1e1e;
+  color: #ddd;
+  font-size: 12px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+}
+
+.llm-output:empty {
+  display: none;
+}
+
+.llm-output[data-kind="error"] {
+  border-color: var(--danger);
+  color: #ffb4ad;
+}
+
+.llm-output[data-kind="warn"] {
+  border-color: var(--warning);
+  color: #ffe08a;
+}
+
+.llm-output[data-kind="busy"] {
+  color: var(--chrome-muted);
+}
+
+/* Focus mode hides the chrome so only the page remains. */
+body.focus-mode #menu-bar,
+body.focus-mode #ribbon,
+body.focus-mode #left-sidebar,
+body.focus-mode #sidebar,
+body.focus-mode .editor-scroll-container {
+  padding-block: 0;
+}
+
+body.focus-mode #menu-bar,
+body.focus-mode #ribbon,
+body.focus-mode #left-sidebar,
+body.focus-mode #sidebar {
+  display: none;
+}
+
+/* ==========================================================================
+   Outline
+   ========================================================================== */
+
+.outline {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  font-size: 12px;
+}
+
+.outline-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.outline-link {
+  display: block;
+  width: 100%;
+  padding-block: 5px;
+  border: 0;
+  background: transparent;
+  color: #ccc;
+  text-align: start;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.outline-link:hover,
+.outline-link:focus-visible {
+  color: #fff;
+  text-decoration: underline;
+}
+
+.outline-empty {
+  margin: 10px 0;
+  color: var(--chrome-muted);
+  line-height: 1.5;
+}
+
+/* ==========================================================================
+   Page geometry
+   ========================================================================== */
+
 .tiptap {
-    font-family: Arial, sans-serif; /* Default sans-serif for now */
-    font-size: 11pt; /* Base size */
-    line-height: 1.5; /* Good readability */
-    color: #000;
+  display: flex;
+  flex-direction: column;
+  gap: var(--page-gap);
+  align-items: center;
+  padding-bottom: 60px;
+  font-family: var(--doc-font);
+  font-size: var(--doc-size);
+  line-height: var(--doc-leading);
+  color: var(--text-color);
+  outline: none;
+  transform: scale(var(--zoom));
+  transform-origin: top center;
 }
 
-/* Treat headings as structural API, not just font presets */
-.tiptap h1 { /* Title */
-    font-size: 26pt;
-    font-weight: 400; /* Titles often aren't bolded heavily */
-    margin-top: 24pt;
-    margin-bottom: 6pt;
-    line-height: 1.2;
-    page-break-after: avoid; /* Keep title with content */
+.tiptap > .page {
+  position: relative;
+  flex: 0 0 auto;
+  width: var(--page-width);
+  height: var(--page-height);
+  padding: var(--margin-top) var(--margin-right) var(--margin-bottom) var(--margin-left);
+  background: var(--paper-bg);
+  color: var(--text-color);
+  box-shadow: var(--page-shadow);
+  /* The engine measures scrollHeight against clientHeight, so overflow is
+     never hidden for a page it has not already marked overfull. */
+  overflow: hidden;
 }
 
-.tiptap h2 { /* Subtitle */
-    font-size: 15pt;
-    font-weight: 400;
-    color: #666; /* Slightly grayed out */
-    margin-top: 0;
-    margin-bottom: 24pt;
-    line-height: 1.2;
-    page-break-after: avoid;
+/* A single block too tall for one page grows instead of being clipped, so its
+   text stays readable and selectable rather than becoming invisible data. */
+.tiptap > .page[data-overfull="true"] {
+  height: auto;
+  min-height: var(--page-height);
+  overflow: visible;
+  box-shadow: var(--page-shadow), 0 0 0 2px var(--warning);
 }
 
-.tiptap h3 { /* Heading 1 */
-    font-size: 20pt;
-    font-weight: 400;
-    margin-top: 18pt;
-    margin-bottom: 6pt;
-    line-height: 1.2;
-    page-break-after: avoid;
+/* Page numbers, added by CSS so they never enter the document. */
+.tiptap > .page::after {
+  content: attr(data-page-number);
+  position: absolute;
+  inset-block-end: calc(var(--margin-bottom) / 3);
+  inset-inline: 0;
+  color: #999;
+  font-size: 9pt;
+  text-align: center;
 }
 
-.tiptap h4 { /* Heading 2 */
-    font-size: 16pt;
-    font-weight: 600; /* Bold */
-    margin-top: 14pt;
-    margin-bottom: 4pt;
-    line-height: 1.2;
-    page-break-after: avoid;
+.tiptap > .page[data-overfull="true"]::after {
+  content: none;
 }
 
-.tiptap h5 { /* Heading 3 */
-    font-size: 14pt;
-    font-weight: 400;
-    margin-top: 12pt;
-    margin-bottom: 4pt;
-    line-height: 1.2;
-    page-break-after: avoid;
+/* ==========================================================================
+   Document typography
+   ========================================================================== */
+
+.tiptap p {
+  margin: 0 0 6pt;
 }
 
-.tiptap h6 { /* Heading 4 */
-    font-size: 12pt;
-    font-weight: 600; /* Bold */
-    color: #666;
-    margin-top: 12pt;
-    margin-bottom: 4pt;
-    line-height: 1.2;
-    page-break-after: avoid;
+.tiptap > .page > :first-child {
+  margin-top: 0;
 }
 
-.tiptap p { /* Normal Text */
-    font-size: 11pt; 
-    margin-top: 0;
-    margin-bottom: 6pt; /* Space between paragraphs */
+.tiptap h1,
+.tiptap h2,
+.tiptap h3,
+.tiptap h4,
+.tiptap h5,
+.tiptap h6 {
+  line-height: 1.2;
+  /* A heading must never be the last thing on a page. */
+  break-after: avoid;
+  page-break-after: avoid;
+}
+
+.tiptap h1 {
+  margin: 0 0 6pt;
+  font-size: 26pt;
+  font-weight: 400;
+}
+
+.tiptap h2 {
+  margin: 0 0 18pt;
+  font-size: 15pt;
+  font-weight: 400;
+  color: #666;
+}
+
+.tiptap h3 {
+  margin: 18pt 0 6pt;
+  font-size: 20pt;
+  font-weight: 400;
+}
+
+.tiptap h4 {
+  margin: 14pt 0 4pt;
+  font-size: 16pt;
+  font-weight: 600;
+}
+
+.tiptap h5 {
+  margin: 12pt 0 4pt;
+  font-size: 14pt;
+  font-weight: 400;
+}
+
+.tiptap h6 {
+  margin: 12pt 0 4pt;
+  font-size: 12pt;
+  font-weight: 600;
+  color: #666;
+}
+
+.tiptap ul,
+.tiptap ol {
+  margin: 0 0 6pt;
+  padding-inline-start: 24pt;
+}
+
+.tiptap li p {
+  margin: 0 0 3pt;
+}
+
+.tiptap blockquote {
+  margin: 0 0 6pt;
+  padding-inline-start: 18px;
+  border-inline-start: 3px solid #ddd;
+  color: #444;
+}
+
+.tiptap pre {
+  margin: 0 0 6pt;
+  padding: 10px 12px;
+  border: 1px solid #e0e0e0;
+  border-radius: 4px;
+  background: #f6f6f6;
+  font-family: ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace;
+  font-size: 10pt;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.tiptap code {
+  padding: 1px 4px;
+  border-radius: 3px;
+  background: #f0f0f0;
+  font-family: ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace;
+  font-size: 0.92em;
+}
+
+.tiptap pre code {
+  padding: 0;
+  background: none;
+}
+
+.tiptap hr {
+  height: 0;
+  margin: 12pt 0;
+  border: 0;
+  border-top: 1px solid #ccc;
+}
+
+.tiptap a {
+  color: var(--accent);
+  text-decoration: underline;
+}
+
+/* A scaffolded span: the instruction is attached to selected text. */
+.tiptap span[data-scaffold] {
+  padding-inline: 1px;
+  border-bottom: 2px dashed var(--warning);
+  background: rgba(255, 235, 59, 0.4);
+  cursor: help;
+}
+
+.tiptap span[data-scaffold]:hover {
+  background: rgba(255, 235, 59, 0.65);
+}
+
+/* ProseMirror's gap cursor, so a dropped block reads clearly. */
+.tiptap .ProseMirror-gapcursor::after {
+  border-top-color: var(--accent);
+}
+
+.tiptap .ProseMirror-selectednode {
+  outline: 2px solid var(--accent);
+}
+
+.fatal {
+  margin: 40px auto;
+  max-width: 60ch;
+  padding: 16px;
+  border: 1px solid var(--danger);
+  border-radius: 6px;
+  background: #fff;
+  color: #7a1000;
+  line-height: 1.5;
+}
+
+/* ==========================================================================
+   Status bar
+   ========================================================================== */
+
+#status-bar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  height: var(--status-height);
+  padding: 0 12px;
+  background: #007acc;
+  color: #fff;
+  font-size: 12px;
+  user-select: none;
+}
+
+#status-bar[data-flashing="true"] {
+  background: #0e639c;
+}
+
+.status-meta {
+  font-variant-numeric: tabular-nums;
+  opacity: 0.9;
+}
+
+/* ==========================================================================
+   Settings modal
+   ========================================================================== */
+
+.modal {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.5);
+  z-index: 9999;
+}
+
+.modal[hidden] {
+  display: none;
+}
+
+.modal-body {
+  width: min(420px, calc(100vw - 32px));
+  max-height: calc(100vh - 64px);
+  padding: 20px;
+  overflow-y: auto;
+  border: 1px solid #444;
+  border-radius: 8px;
+  background: #2b2b2b;
+  color: #fff;
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.6);
+}
+
+.modal-body h2 {
+  margin: 0 0 12px;
+  font-size: 16px;
+}
+
+.modal-body h3 {
+  margin: 18px 0 8px;
+  padding-top: 12px;
+  border-top: 1px solid #444;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--chrome-muted);
+}
+
+.modal-row {
+  display: grid;
+  grid-template-columns: auto 1fr auto 1fr;
+  gap: 8px;
+  align-items: center;
+}
+
+.modal-column {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 8px;
+  align-items: center;
+}
+
+.modal-body input[type="number"] {
+  width: 100%;
+  padding: 5px 8px;
+  border: 1px solid #555;
+  border-radius: 4px;
+  background: #1e1e1e;
+  color: #fff;
+}
+
+.modal-body input[type="color"] {
+  width: 48px;
+  height: 26px;
+  padding: 0;
+  border: 1px solid #555;
+  border-radius: 4px;
+  background: none;
+  cursor: pointer;
+}
+
+.modal-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+  margin-top: 20px;
+}
+
+/* ==========================================================================
+   Print
+   ========================================================================== */
+
+@media print {
+  html,
+  body {
+    height: auto;
+    overflow: visible;
+    background: #fff;
+  }
+
+  #menu-bar,
+  #ribbon,
+  #status-bar,
+  #sidebar,
+  #left-sidebar,
+  #context-menu,
+  #context-menu-standard,
+  .modal,
+  .skip-link {
+    display: none !important;
+  }
+
+  #main-content,
+  .editor-scroll-container {
+    display: block;
+    padding: 0;
+    overflow: visible;
+    background: #fff;
+  }
+
+  .tiptap {
+    display: block;
+    padding: 0;
+    transform: none;
+  }
+
+  .tiptap > .page {
+    width: auto;
+    height: auto;
+    min-height: 0;
+    margin: 0;
+    padding: 0;
+    background: #fff;
+    box-shadow: none;
+    overflow: visible;
+    break-after: page;
+  }
+
+  .tiptap > .page:last-child {
+    break-after: auto;
+  }
+
+  .tiptap > .page::after {
+    content: none;
+  }
 }

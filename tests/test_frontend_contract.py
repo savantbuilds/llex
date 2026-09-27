@@ -1,0 +1,323 @@
+"""Static consistency checks between the template, the script and the CSS.
+
+The editor is wired by element id across three files, and a typo in any of them
+fails silently: the control simply does nothing. These tests catch that without
+a browser, which is worth far more than their size suggests.
+"""
+
+from __future__ import annotations
+
+import re
+from pathlib import Path
+
+import pytest
+
+PACKAGE = Path(__file__).resolve().parent.parent / "llex"
+TEMPLATE = PACKAGE / "templates" / "index.html"
+SCRIPT_DIR = PACKAGE / "static" / "js"
+STYLES = PACKAGE / "static" / "styles.css"
+MINI_TOOLBAR = PACKAGE / "static" / "mini-toolbar.css"
+
+#: ``getElementById('x')``, ``byId('x')`` and ``require('x', ...)``
+_ID_CALL = re.compile(
+    r"""(?:getElementById|byId|require)\(\s*(['"])([A-Za-z][\w-]*)\1""",
+)
+#: ``document.querySelector('#x')``
+_ID_QUERY = re.compile(r"""querySelector\(\s*['"]#([A-Za-z][\w-]*)['"]""")
+#: ``id="x"`` in the template
+_ID_ATTR = re.compile(r"""\bid\s*=\s*(['"])([\w-]+)\1""")
+#: ``#id`` in a stylesheet. Hex colour literals such as ``#f0f0f0`` match the
+#: same shape, so they are filtered out separately.
+_CSS_ID = re.compile(r"(?<![\w-])#([A-Za-z][\w-]*)")
+_HEX_COLOUR = re.compile(r"^[0-9a-fA-F]{3,8}$")
+
+#: Ids the script looks up that are not controls but part of the CSS contract
+#: or of the token handshake, so their absence is not a wiring bug.
+_ALLOWED_MISSING = {
+    "editor",  # the TipTap mount point, required but not a control
+}
+
+#: Menu items that must have a handler registered in menus.js. A menu entry
+#: with no handler is a dead control, which is the defect this suite exists for.
+_MENU_ITEMS = [
+    "menu-new",
+    "menu-open",
+    "menu-save",
+    "menu-save-as",
+    "menu-print",
+    "menu-undo",
+    "menu-redo",
+    "menu-cut",
+    "menu-copy",
+    "menu-paste",
+    "menu-select-all",
+    "menu-find",
+    "menu-zoom-in",
+    "menu-zoom-out",
+    "menu-zoom-reset",
+    "menu-toggle-outline",
+    "menu-toggle-assistant",
+    "menu-focus",
+    "menu-settings",
+]
+
+_RIBBON_BUTTONS = [
+    "btn-undo",
+    "btn-redo",
+    "btn-bold",
+    "btn-italic",
+    "btn-underline",
+    "btn-strikethrough",
+    "btn-align-left",
+    "btn-align-center",
+    "btn-align-right",
+    "btn-align-justify",
+    "btn-bullet",
+    "btn-number",
+    "btn-toggle-outline",
+    "btn-toggle-sidebar",
+    "style-dropdown",
+    "font-family",
+    "font-size",
+]
+
+_ASSISTANT_CONTROLS = [
+    "btn-summarize",
+    "btn-rewrite",
+    "btn-outline",
+    "btn-ask",
+    "btn-execute-scaffolds",
+    "llm-prompt",
+    "llm-tone",
+    "llm-output",
+    "llm-status",
+]
+
+_SETTINGS_CONTROLS = [
+    "settings-modal",
+    "btn-settings-save",
+    "btn-settings-cancel",
+    "margin-top",
+    "margin-right",
+    "margin-bottom",
+    "margin-left",
+    "theme-bg",
+    "theme-paper",
+    "theme-text",
+    "theme-ribbon",
+    "theme-border",
+]
+
+
+@pytest.fixture(scope="module")
+def template() -> str:
+    return TEMPLATE.read_text(encoding="utf-8")
+
+
+@pytest.fixture(scope="module")
+def template_ids(template: str) -> set[str]:
+    return {match.group(2) for match in _ID_ATTR.finditer(template)}
+
+
+@pytest.fixture(scope="module")
+def script() -> str:
+    return "\n".join(
+        path.read_text(encoding="utf-8") for path in sorted(SCRIPT_DIR.glob("*.js"))
+    )
+
+
+class TestTemplateIntegrity:
+    def test_is_valid_html_structure(self, template: str) -> None:
+        """Every element must be closed and the document must have one body."""
+        assert template.lstrip().startswith("<!DOCTYPE html>")
+        assert len(re.findall(r"<html[\s>]", template)) == 1
+        assert template.count("</html>") == 1
+        assert len(re.findall(r"<body[\s>]", template)) == 1
+        assert template.count("</body>") == 1
+        assert len(re.findall(r"<head[\s>]", template)) == 1
+        assert template.count("</head>") == 1
+
+    def test_no_markup_after_the_closing_html_tag(self, template: str) -> None:
+        """The settings dialog used to live after </html> and never rendered."""
+        assert "</html>" in template
+        assert not template.split("</html>", 1)[1].strip()
+
+    def test_ids_are_unique(self, template: str) -> None:
+        ids = [match.group(2) for match in _ID_ATTR.finditer(template)]
+        duplicates = {name for name in ids if ids.count(name) > 1}
+        assert not duplicates, f"duplicate element ids: {sorted(duplicates)}"
+
+    def test_declares_the_api_token_placeholder(self, template: str) -> None:
+        assert '__LLEX_API_TOKEN__' in template
+        assert 'name="llex-api-token"' in template
+
+    def test_loads_the_built_bundle(self, template: str) -> None:
+        assert '/static/editor.bundle.js' in template
+
+    def test_loads_both_stylesheets(self, template: str) -> None:
+        assert '/static/styles.css' in template
+        assert '/static/mini-toolbar.css' in template
+
+    def test_every_control_has_an_accessible_name(self, template: str) -> None:
+        """A control with neither text nor aria-label is unusable by AT."""
+        for match in re.finditer(r"<button\b[^>]*>(.*?)</button>", template, re.DOTALL):
+            tag = match.group(0)
+            body = match.group(1).strip()
+            named = (
+                body
+                or 'aria-label="' in tag
+                or 'aria-labelledby="' in tag
+                or "<span" in body
+            )
+            assert named, f"button without an accessible name: {tag[:80]!r}"
+
+    def test_toggle_buttons_declare_their_state(self, template: str) -> None:
+        for name in ("btn-bold", "btn-italic", "btn-underline", "btn-strikethrough"):
+            tag = re.search(rf'<button[^>]*id="{name}"[^>]*>', template)
+            assert tag is not None, f"{name} is missing"
+            assert 'aria-pressed=' in tag.group(0), f"{name} needs aria-pressed"
+
+    def test_panel_buttons_point_at_their_panels(self, template: str) -> None:
+        for button, panel in (
+            ("btn-toggle-outline", "left-sidebar"),
+            ("btn-toggle-sidebar", "sidebar"),
+        ):
+            tag = re.search(rf'<button[^>]*id="{button}"[^>]*>', template)
+            assert tag is not None
+            assert f'aria-controls="{panel}"' in tag.group(0)
+
+
+class TestScriptTargetsExist:
+    def test_every_looked_up_id_exists_in_the_template(self, script: str, template_ids: set[str]) -> None:
+        referenced: set[str] = set()
+        for pattern in (_ID_CALL, _ID_QUERY):
+            referenced.update(match.group(2) for match in pattern.finditer(script))
+
+        missing = {
+            name
+            for name in referenced
+            if name not in template_ids and name not in _ALLOWED_MISSING
+        }
+        assert not missing, f"script references ids absent from the template: {sorted(missing)}"
+
+    def test_export_menu_container_exists(self, template_ids: set[str]) -> None:
+        """The download menu is populated at runtime, so it needs a container."""
+        assert "export-menu" in template_ids
+
+    def test_scaffold_mark_is_readable_from_the_dom(self, template: str) -> None:
+        assert "data-scaffold" in (SCRIPT_DIR / "extensions.js").read_text(encoding="utf-8")
+
+
+class TestNoDeadControls:
+    @pytest.mark.parametrize("element_id", _MENU_ITEMS)
+    def test_menu_items_are_wired(self, element_id: str, template_ids: set[str], script: str) -> None:
+        assert element_id in template_ids, f"{element_id} is missing from the template"
+        assert element_id in script, f"{element_id} has no handler"
+
+    @pytest.mark.parametrize("element_id", _RIBBON_BUTTONS)
+    def test_ribbon_controls_are_wired(self, element_id: str, template_ids: set[str], script: str) -> None:
+        assert element_id in template_ids, f"{element_id} is missing from the template"
+        assert element_id in script, f"{element_id} has no handler"
+
+    @pytest.mark.parametrize("element_id", _ASSISTANT_CONTROLS)
+    def test_assistant_controls_are_wired(
+        self, element_id: str, template_ids: set[str], script: str
+    ) -> None:
+        assert element_id in template_ids, f"{element_id} is missing from the template"
+        assert element_id in script, f"{element_id} has no handler"
+
+    @pytest.mark.parametrize("element_id", _SETTINGS_CONTROLS)
+    def test_settings_controls_are_wired(
+        self, element_id: str, template_ids: set[str], script: str
+    ) -> None:
+        assert element_id in template_ids, f"{element_id} is missing from the template"
+        assert element_id in script, f"{element_id} has no handler"
+
+    def test_context_menu_actions_all_have_implementations(self, script: str) -> None:
+        """A context-menu action with no handler silently does nothing.
+
+        Handlers appear in three shapes: an object key (``'bullet-list':`` or
+        the bare identifier ``highlight:``), a comparison in a click handler
+        (``action === 'cut'``), and a value comparison in a change handler
+        (``select.dataset.action === 'font-family'``).
+        """
+        template = TEMPLATE.read_text(encoding="utf-8")
+        declared = set(re.findall(r"""data-action="([\w-]+)""", template))
+        assert declared, "no context menu actions found in the template"
+
+        patterns = [
+            r"""(?<![\w-])['"]?{name}['"]?\s*:""",
+            r"""===\s*['"]{name}['"]""",
+            r"""==\s*['"]{name}['"]""",
+        ]
+        missing = {
+            name
+            for name in declared
+            if not any(
+                re.search(pattern.format(name=re.escape(name)), script) for pattern in patterns
+            )
+        }
+        assert not missing, f"context menu actions with no handler: {sorted(missing)}"
+
+
+class TestStylesheetIntegrity:
+    @pytest.mark.parametrize("path", [STYLES, MINI_TOOLBAR])
+    def test_braces_are_balanced(self, path: Path) -> None:
+        text = path.read_text(encoding="utf-8")
+        # Strip comments before counting, so a brace in prose cannot confuse it.
+        stripped = re.sub(r"/\*.*?\*/", "", text, flags=re.DOTALL)
+        assert stripped.count("{") == stripped.count("}"), f"unbalanced braces in {path.name}"
+
+    def test_no_stray_closing_braces(self) -> None:
+        for path in (STYLES, MINI_TOOLBAR):
+            text = re.sub(r"/\*.*?\*/", "", path.read_text(encoding="utf-8"), flags=re.DOTALL)
+            depth = 0
+            for char in text:
+                if char == "{":
+                    depth += 1
+                elif char == "}":
+                    depth -= 1
+                    assert depth >= 0, f"{path.name} closes a brace that was never opened"
+            assert depth == 0, f"{path.name} leaves {depth} brace(s) unclosed"
+
+    def test_page_geometry_constants_agree_with_the_backend(self) -> None:
+        """816x1056 is 8.5x11in at 96dpi, and the engine measures against it."""
+        text = STYLES.read_text(encoding="utf-8")
+        assert "--page-width: 816px" in text
+        assert "--page-height: 1056px" in text
+        script = (SCRIPT_DIR / "pagination.js").read_text(encoding="utf-8")
+        assert "OVERFLOW_TOLERANCE" in script
+
+    def test_overfull_pages_are_not_clipped(self) -> None:
+        """A grown page must show its content, or text becomes unreachable."""
+        text = STYLES.read_text(encoding="utf-8")
+        assert '[data-overfull="true"]' in text
+        rule = text.split('[data-overfull="true"]', 1)[1]
+        assert "overflow: visible" in rule.split("}", 1)[0]
+        assert "height: auto" in rule.split("}", 1)[0]
+
+    def test_default_page_geometry_is_hidden(self) -> None:
+        """Overflow must only be hidden for pages the engine has measured."""
+        text = STYLES.read_text(encoding="utf-8")
+        base = text.split(".tiptap > .page {", 1)[1].split("}", 1)[0]
+        assert "overflow: hidden" in base
+
+    @pytest.mark.parametrize("selector", ["#left-sidebar", "#sidebar", "#status-bar", "#ribbon", "#menu-bar"])
+    def test_structural_selectors_exist(self, selector: str) -> None:
+        assert selector in STYLES.read_text(encoding="utf-8"), f"{selector} is unstyled"
+
+    def test_the_outline_region_is_styled(self) -> None:
+        # Styled by class rather than id, so the scroll container is bounded.
+        text = STYLES.read_text(encoding="utf-8")
+        assert ".outline {" in text
+        assert "overflow-y: auto" in text.split(".outline {", 1)[1].split("}", 1)[0]
+
+    def test_every_styled_id_exists_in_the_template(self, template_ids: set[str]) -> None:
+        unstyled: set[str] = set()
+        for path in (STYLES, MINI_TOOLBAR):
+            for match in _CSS_ID.finditer(path.read_text(encoding="utf-8")):
+                name = match.group(1)
+                if name in template_ids or _HEX_COLOUR.match(name):
+                    continue
+                unstyled.add(name)
+        assert not unstyled, f"CSS targets ids absent from the template: {sorted(unstyled)}"
