@@ -17,7 +17,7 @@ import TextAlign from '@tiptap/extension-text-align';
 import Document from '@tiptap/extension-document';
 
 import { CharacterStyle, Heading, Page, Scaffold } from './extensions.js';
-import { Paginator } from './paginator.js';
+import { Paginator, VIRTUAL_CLASS, supportsContainment } from './paginator.js';
 import { stripPageWrappers } from './pagination.js';
 import { createRibbon } from './ribbon.js';
 import { createOutline } from './outline.js';
@@ -280,6 +280,14 @@ async function boot() {
   });
 
   // -- Autosave and conflict detection ------------------------------------- //
+
+  // Let the browser skip rendering pages that are nowhere near the viewport.
+  // Opt-in on capability, so a browser without `content-visibility` simply lays
+  // every page out as it always did. See the module docstring in paginator.js:
+  // this is containment, not virtualisation, and the model needs a real DOM.
+  if (supportsContainment()) {
+    byId('main-content').classList.add(VIRTUAL_CLASS);
+  }
 
   const autosave = createAutosave({
     editor,

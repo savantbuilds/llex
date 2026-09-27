@@ -35,7 +35,53 @@ import {
 /** Ceiling on reflow rounds, so a pathological document cannot spin. */
 export const MAX_ROUNDS = 200;
 
+/** Class that enables CSS containment of off-screen pages. */
+export const VIRTUAL_CLASS = 'llex-virtual';
+
+/** Class that suspends it while the layout is being measured. */
+export const MEASURING_CLASS = 'llex-measuring';
+
 export const paginationKey = new PluginKey('llex-pagination');
+
+/**
+ * Whether the browser can skip rendering off-screen pages.
+ *
+ * `content-visibility` is how a long document is made cheap to scroll without
+ * touching ProseMirror's model, because the model needs a real DOM for every
+ * block. Where it is unsupported the page set is simply laid out as before, so
+ * this is an optimisation and never a requirement.
+ *
+ * @returns {boolean}
+ */
+export function supportsContainment() {
+  if (typeof CSS === 'undefined' || typeof CSS.supports !== 'function') return false;
+  return CSS.supports('content-visibility', 'auto');
+}
+
+/**
+ * Run `measure` with page containment suspended.
+ *
+ * The paginator decides what overflows by comparing each page's `scrollHeight`
+ * with its `clientHeight`. A page the browser is skipping layout for reports
+ * only its `contain-intrinsic-size`, so every page would measure as fitting and
+ * pagination would silently stop working on exactly the long documents this
+ * optimisation exists for.
+ *
+ * @template T
+ * @param {Element} container
+ * @param {() => T} measure
+ * @returns {T}
+ */
+export function measuring(container, measure) {
+  if (!supportsContainment()) return measure();
+  const wasVirtual = container.classList.contains(VIRTUAL_CLASS);
+  if (wasVirtual) container.classList.add(MEASURING_CLASS);
+  try {
+    return measure();
+  } finally {
+    if (wasVirtual) container.classList.remove(MEASURING_CLASS);
+  }
+}
 
 /**
  * Compute the transaction that reflows every currently-overflowing page.
@@ -50,7 +96,9 @@ export const paginationKey = new PluginKey('llex-pagination');
  * @returns {{transaction: import('@tiptap/pm/transform').Transaction, moved: number, grown: number[]} | null}
  */
 export function reflowTransaction(state, container, pinned) {
-  const { overflowed, counts } = measureOverflow(container);
+  // Containment is suspended for the measurement: a skipped page reports only
+  // its intrinsic size and would measure as fitting.
+  const { overflowed, counts } = measuring(container, () => measureOverflow(container));
 
   let transaction = null;
   let moved = 0;

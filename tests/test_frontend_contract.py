@@ -16,6 +16,21 @@ PACKAGE = Path(__file__).resolve().parent.parent / "llex"
 TEMPLATE = PACKAGE / "templates" / "index.html"
 SCRIPT_DIR = PACKAGE / "static" / "js"
 STYLES = PACKAGE / "static" / "styles.css"
+
+#: Class names shared between paginator.js and styles.css. Read from the source
+#: rather than repeated, so a rename cannot leave the contract test agreeing with
+#: itself and disagreeing with the application.
+_PAGINATOR = (SCRIPT_DIR / "paginator.js").read_text(encoding="utf-8")
+
+
+def _constant(name: str) -> str:
+    match = re.search(rf"export const {name} = '([^']+)'", _PAGINATOR)
+    assert match, f"{name} is not exported from paginator.js"
+    return match.group(1)
+
+
+VIRTUAL_CLASS = _constant("VIRTUAL_CLASS")
+MEASURING_CLASS = _constant("MEASURING_CLASS")
 MINI_TOOLBAR = PACKAGE / "static" / "mini-toolbar.css"
 
 #: ``getElementById('x')``, ``byId('x')`` and ``require('x', ...)``
@@ -326,6 +341,54 @@ class TestStylesheetIntegrity:
         text = STYLES.read_text(encoding="utf-8")
         base = text.split(".tiptap > .page {", 1)[1].split("}", 1)[0]
         assert "overflow: hidden" in base
+
+    def test_off_screen_containment_is_gated_behind_a_class(self) -> None:
+        """`content-visibility` must never apply unconditionally.
+
+        The paginator detects overflow by measuring each page, and a page the
+        browser is skipping layout for reports only its intrinsic size. If the
+        rule applied unconditionally, pagination would silently stop breaking
+        pages on exactly the long documents the rule exists to speed up.
+        """
+        text = STYLES.read_text(encoding="utf-8")
+        assert f".{VIRTUAL_CLASS} .tiptap > .page" in text
+        for rule in text.split(f".{VIRTUAL_CLASS} .tiptap > .page", 1)[1].split("}", 1)[0].splitlines():
+            assert "content-visibility" not in rule or rule.strip().startswith(
+                ("content-visibility", "/*", "*", ".", "@")
+            )
+        # The suspending rule must exist and force the property back on.
+        assert f".{MEASURING_CLASS} .tiptap > .page" in text
+        suspended = text.split(f".{MEASURING_CLASS} .tiptap > .page", 1)[1].split("}", 1)[0]
+        assert "content-visibility: visible" in suspended
+
+    def test_a_placeholder_size_keeps_page_positions_stable(self) -> None:
+        """Without `contain-intrinsic-size` a skipped page collapses and the
+        document jumps as the user scrolls."""
+        text = STYLES.read_text(encoding="utf-8")
+        rule = text.split(f".{VIRTUAL_CLASS} .tiptap > .page", 1)[1].split("}", 1)[0]
+        assert "contain-intrinsic-size" in rule
+
+    def test_printing_is_never_virtualised(self) -> None:
+        """A skipped page would print blank."""
+        text = STYLES.read_text(encoding="utf-8")
+        printed = text.split("@media print", 1)[-1]
+        assert f".{VIRTUAL_CLASS} .tiptap > .page" in printed
+        assert "content-visibility: visible" in printed
+
+    def test_the_javascript_adds_the_class_only_when_supported(self) -> None:
+        """The rule above is gated on a class; adding it unconditionally would
+        opt out of the feature detection entirely."""
+        script = (SCRIPT_DIR / "main.js").read_text(encoding="utf-8")
+        # The constant, not the literal: the literal's single home is
+        # paginator.js, and the rule above is checked against the same constant.
+        assert "classList.add(VIRTUAL_CLASS)" in script
+        assert "supportsContainment()" in script
+        assert "import { Paginator, VIRTUAL_CLASS, supportsContainment }" in script
+
+    def test_every_measurement_suspends_containment(self) -> None:
+        """The single most important invariant here: layout may not be skipped
+        while the paginator is deciding what overflows."""
+        assert "measuring(container, () => measureOverflow(container))" in _PAGINATOR
 
     @pytest.mark.parametrize("selector", ["#left-sidebar", "#sidebar", "#status-bar", "#ribbon", "#menu-bar"])
     def test_structural_selectors_exist(self, selector: str) -> None:

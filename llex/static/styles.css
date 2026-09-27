@@ -698,6 +698,43 @@ body.focus-mode #sidebar {
   overflow: hidden;
 }
 
+/* Let the browser skip layout and paint for pages that are nowhere near the
+   viewport, which is where a long document spends almost all of its time.
+
+   This is CSS-level containment, not model-level virtualisation, and that
+   distinction is load-bearing. ProseMirror owns the whole document as a real
+   DOM: positions, selection, find-and-replace and copy all walk it. Replacing
+   off-screen pages with placeholders would desynchronise the model from the DOM
+   and corrupt the document. `content-visibility` keeps every node present and
+   only tells the browser it may skip *rendering* the ones nobody can see, so
+   the document stays exactly as it was and editing, selection and find are
+   unaffected.
+
+   The class is only added when the browser supports it, and never in print. */
+.llex-virtual .tiptap > .page {
+  content-visibility: auto;
+  /* A placeholder size, so the scrollbar and page positions stay stable while a
+     page is skipped. Without it, a skipped page would collapse and the whole
+     document would jump as the user scrolled. */
+  contain-intrinsic-size: var(--page-width) var(--page-height);
+}
+
+/* Pagination measures `scrollHeight` against `clientHeight` to decide what
+   overflows. A page the browser is skipping reports only its intrinsic size, so
+   measurement would conclude that nothing overflows and pages would silently
+   stop breaking. The paginator suspends containment for the duration of a
+   measurement, which costs nothing extra: it has to lay the document out to
+   measure it either way. */
+.llex-measuring .tiptap > .page {
+  content-visibility: visible;
+}
+
+@media print {
+  .llex-virtual .tiptap > .page {
+    content-visibility: visible;
+  }
+}
+
 /* A single block too tall for one page grows instead of being clipped, so its
    text stays readable and selectable rather than becoming invisible data. */
 .tiptap > .page[data-overfull="true"] {
