@@ -33,6 +33,22 @@ def _constant(name: str) -> str:
 
 VIRTUAL_CLASS = _constant("VIRTUAL_CLASS")
 MEASURING_CLASS = _constant("MEASURING_CLASS")
+
+
+def _css_rules(text: str) -> list[tuple[str, str]]:
+    """Every CSS rule as ``(selector, declarations)``.
+
+    Splitting on the whole stylesheet rather than on one known selector, because
+    a rule may be preceded by several similar ones and a test that reads the
+    wrong block silently passes for the wrong reason.
+    """
+    found: list[tuple[str, str]] = []
+    for block in re.findall(r"([^{}]+)\{([^{}]*)\}", text):
+        selector, body = block[0].strip(), block[1]
+        if not selector or selector.startswith("@"):
+            continue
+        found.append((selector, body))
+    return found
 MINI_TOOLBAR = PACKAGE / "static" / "mini-toolbar.css"
 
 #: ``getElementById('x')``, ``byId('x')`` and ``require('x', ...)``
@@ -122,6 +138,10 @@ _SETTINGS_CONTROLS = [
     "page-paper",
     "page-orientation",
     "page-size-note",
+    "model-select",
+    "model-endpoint",
+    "model-status",
+    "btn-model-refresh",
     "theme-bg",
     "theme-paper",
     "theme-text",
@@ -329,6 +349,75 @@ class TestScriptTargetsExist:
         rule = text.split(".mini-toolbar", 1)[1].split("}", 1)[0]
         assert "position: fixed" in rule
         assert "z-index" in rule
+
+    def test_focus_mode_can_be_left(self) -> None:
+        """Focus mode hides the menu bar and the ribbon, and with them the menu
+        item that turned it on.
+
+        Without a way back it is a one-way door whose only exit is restarting the
+        app, so this checks for all three: a visible control, the Escape key, and
+        a stylesheet rule that keeps the control on screen in focus mode.
+        """
+        template = PACKAGE.joinpath("templates/index.html").read_text(encoding="utf-8")
+        assert 'id="focus-exit"' in template
+        # Hidden at rest.
+        assert re.search(r'id="focus-exit"[^>]*\bhidden\b', template), "the exit must start hidden"
+
+        menus = (SCRIPT_DIR / "menus.js").read_text(encoding="utf-8")
+        assert "exitFocusMode" in menus
+        assert "Escape" in menus and "exitFocusMode()" in menus
+        # The keyboard handler must not be behind the modifier gate, or Escape
+        # would do nothing.
+        escape_at = menus.index("event.key === 'Escape'")
+        modifier_at = menus.index("hasModifier(event)")
+        assert escape_at < modifier_at, "Escape is checked after the modifier gate"
+
+        styles = STYLES.read_text(encoding="utf-8")
+        rule = styles.split(".focus-exit {", 1)[1].split("}", 1)[0]
+        assert "position: fixed" in rule
+        # And it must not be hidden by the rules that hide the chrome.
+        hidden_block = styles.split("body.focus-mode #left-sidebar,", 1)[1].split("}", 1)[0]
+        assert "focus-exit" not in hidden_block
+
+    def test_focus_mode_hides_the_menu_that_turns_it_on(self) -> None:
+        """The reason an exit control is needed, pinned so the trap cannot return."""
+        blocks = _css_rules(STYLES.read_text(encoding="utf-8"))
+        hiding = [
+            selector
+            for selector, body in blocks
+            if "focus-mode" in selector and "#menu-bar" in selector and "display: none" in body
+        ]
+        assert hiding, "focus mode does not hide the menu bar, so the premise is wrong"
+        assert any("#ribbon" in selector for selector in hiding), "focus mode should hide the ribbon too"
+
+    def test_nothing_hides_the_focus_exit(self) -> None:
+        """Checked by rule, not by reading one block: the exit has to survive
+        every rule that hides the chrome."""
+        blocks = _css_rules(STYLES.read_text(encoding="utf-8"))
+        for selector, body in blocks:
+            mentions_exit = any("focus-exit" in part for part in selector.split(","))
+            if mentions_exit and "display: none" in body:
+                # The `[hidden]` rule is the intended one; anything else would
+                # make the exit unusable.
+                assert "[hidden]" in selector, f"focus-exit is hidden by {selector!r}"
+
+    def test_the_model_picker_is_wired(self) -> None:
+        """The model used to be settable only by an environment variable, which a
+        user of a desktop application has no way to set."""
+        script = (SCRIPT_DIR / "settings.js").read_text(encoding="utf-8")
+        for needed in ("createModelPicker", "refreshModels", "selectModel", "No model (offline tools only)"):
+            assert needed in script, needed
+        api = (SCRIPT_DIR / "api.js").read_text(encoding="utf-8")
+        assert "'/api/models'" in api
+        assert "'/api/models/refresh'" in api
+
+    def test_the_runner_can_be_typed_in(self) -> None:
+        """The known runners are a list, not a limit."""
+        template = PACKAGE.joinpath("templates/index.html").read_text(encoding="utf-8")
+        match = re.search(r'<input[^>]*id="model-endpoint"[^>]*>', template)
+        assert match, "there is no runner field"
+        assert 'type="text"' in match.group(0)
+        assert "disabled" not in match.group(0)
 
     def test_export_menu_container_exists(self, template_ids: set[str]) -> None:
         """The download menu is populated at runtime, so it needs a container."""

@@ -273,7 +273,20 @@ async function boot() {
     },
   });
 
+  // The assistant is created after the settings dialog, and the model picker
+  // needs to tell it when the model changes. A holder rather than a direct
+  // reference: the callback only ever runs on a click, by which time the
+  // assistant exists, but reading a `const` before it is initialised throws.
+  const assistantRef = { current: null };
+
   const settings = createSettings({
+    api,
+    onModelChanged: (info) => {
+      const assistant = assistantRef.current;
+      if (!assistant) return;
+      const model = info && info.current ? info.current.model : '';
+      assistant.describe({ backend: info ? info.backend : '', online: Boolean(model) });
+    },
     onPageChanged: ({ width, height, margins }) => {
       const style = document.documentElement.style;
       style.setProperty('--page-width', `${width * PIXELS_PER_INCH}px`);
@@ -288,6 +301,7 @@ async function boot() {
   });
 
   const assistant = createAssistant(editor, { api, status, panel: byId('sidebar') });
+  assistantRef.current = assistant;
 
   // The highlight plugin is registered here and reads its state from the
   // controller lazily, so the controller can be created after the editor.

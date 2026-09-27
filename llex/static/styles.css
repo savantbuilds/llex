@@ -1081,6 +1081,52 @@ body.focus-mode #sidebar {
   display: none;
 }
 
+/* The only control focus mode leaves behind. Fixed to the top-right, out of the
+   way of the text, and deliberately the one thing that stays visible: a mode
+   that removes its own controls needs to provide its own way out. */
+.focus-exit {
+  position: fixed;
+  inset-block-start: 12px;
+  inset-inline-end: 16px;
+  z-index: 10060;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 10px;
+  border: 1px solid #555;
+  border-radius: 4px;
+  background: rgba(43, 43, 43, 0.9);
+  color: var(--chrome-fg);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+  opacity: 0.35;
+  transition: opacity 0.15s ease;
+}
+
+.focus-exit:hover,
+.focus-exit:focus-visible {
+  opacity: 1;
+}
+
+.focus-exit[hidden] {
+  display: none;
+}
+
+.focus-exit kbd {
+  margin-inline-start: 0;
+  padding-inline-start: 0;
+}
+
+/* While the mouse is still elsewhere the control stays faint, so it does not
+   sit over the text permanently -- but never invisible, because an exit the
+   reader has to hunt for is not an exit. */
+@media (prefers-reduced-motion: reduce) {
+  .focus-exit {
+    transition: none;
+  }
+}
+
 /* ==========================================================================
    Outline
    ========================================================================== */
@@ -1507,6 +1553,25 @@ body.focus-mode #sidebar {
 .modal-body select option {
   background: #1e1e1e;
   color: #fff;
+}
+
+.modal-row input[type="text"] {
+  width: 100%;
+  padding: 5px 8px;
+  border: 1px solid #555;
+  border-radius: 4px;
+  background: #1e1e1e;
+  color: #fff;
+}
+
+.model-label {
+  font-size: 11px;
+  color: var(--chrome-muted);
+}
+
+.modal-row .btn {
+  justify-self: start;
+  white-space: nowrap;
 }
 
 .modal-note {

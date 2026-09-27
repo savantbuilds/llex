@@ -35,11 +35,15 @@ long-lived streaming session.
 
 from __future__ import annotations
 
+import http.client
 import json
 import os
 import re
 import urllib.error
+import urllib.parse
 import urllib.request
+from collections.abc import Iterable, Mapping
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from typing import Any, Final, Protocol
 
@@ -437,18 +441,50 @@ class LocalLLMBridge:
         *,
         fallback: Engine | None = None,
     ) -> None:
+        self.fallback = fallback or HeuristicEngine()
+        #: Last transport error, for the UI to surface instead of a bare failure.
+        self.last_error: str | None = None
+        #: Where the endpoint and model came from, so the UI can say so rather
+        #: than leaving the user to wonder why a choice they made was ignored.
+        self.source = "default"
+
+        saved_endpoint, saved_model = _saved_model_choice()
+        if saved_endpoint is not None or saved_model is not None:
+            self.source = "settings"
+        elif os.environ.get("LLEX_LOCAL_MODEL") or os.environ.get("LLEX_LOCAL_MODEL_NAME"):
+            self.source = "environment"
+
         self.endpoint = _clean_endpoint(
-            endpoint if endpoint is not None else os.environ.get("LLEX_LOCAL_MODEL", DEFAULT_ENDPOINT)
+            endpoint
+            if endpoint is not None
+            else (
+                saved_endpoint
+                if saved_endpoint is not None
+                else os.environ.get("LLEX_LOCAL_MODEL", DEFAULT_ENDPOINT)
+            )
         )
-        self.model = model or os.environ.get("LLEX_LOCAL_MODEL_NAME", DEFAULT_MODEL)
+        self.model = (
+            model
+            or saved_model
+            or os.environ.get("LLEX_LOCAL_MODEL_NAME", DEFAULT_MODEL)
+        )
         self.timeout = float(
             timeout
             if timeout is not None
             else os.environ.get("LLEX_LOCAL_MODEL_TIMEOUT", DEFAULT_TIMEOUT)
         )
-        self.fallback = fallback or HeuristicEngine()
-        #: Last transport error, for the UI to surface instead of a bare failure.
-        self.last_error: str | None = None
+
+    def configure(self, *, endpoint: str | None = None, model: str | None = None) -> None:
+        """Point the bridge somewhere else, at the user's request.
+
+        `None` means "leave it alone", so the API can pass whichever field the
+        caller supplied without having to know the other's current value.
+        """
+        if endpoint is not None:
+            self.endpoint = _clean_endpoint(endpoint)
+        if model is not None:
+            self.model = model
+        self.last_error = None
 
     # -- Introspection ----------------------------------------------------- #
 
@@ -618,6 +654,275 @@ def _clean_endpoint(value: str) -> str:
     if not endpoint.startswith(("http://", "https://")):
         endpoint = f"http://{endpoint}"
     return endpoint
+
+
+# --------------------------------------------------------------------------- #
+# Discovery
+# --------------------------------------------------------------------------- #
+
+
+@dataclass(frozen=True, slots=True)
+class ModelCandidate:
+    """A model some local runner is offering.
+
+    ``endpoint`` is kept alongside the name because the same model name can exist
+    on two runners, and picking one has to say which.
+    """
+
+    endpoint: str
+    name: str
+    #: The runner's own description, when it gives one.
+    detail: str = ""
+
+    def to_dict(self) -> dict[str, str]:
+        return {"endpoint": self.endpoint, "name": self.name, "detail": self.detail}
+
+    @property
+    def label(self) -> str:
+        """What to show in a picker: the name, then where it came from."""
+        return f"{self.name} — {self.runner_name}"
+
+    @property
+    def runner_name(self) -> str:
+        """The runner, guessed from its port, for a picker the user can read.
+
+        Matches on the URL's *port* rather than on the string, because an
+        endpoint is a base URL ending in ``/v1`` and comparing against the bare
+        port would never match.
+        """
+        port = _port_of(self.endpoint)
+        if port:
+            for known, label in KNOWN_RUNNERS:
+                if known == f":{port}":
+                    return label
+        return self.endpoint
+
+
+#: Local runners LLex knows how to look for, by the port they use by default.
+#:
+#: These are the tools a user of a local-first editor is likely to have, and
+#: probing a fixed list is cheap -- a connection refused on loopback is immediate.
+#: Anything else can still be added by hand in the settings box, which is why
+#: that exists too.
+KNOWN_RUNNERS: Final[tuple[tuple[str, str], ...]] = (
+    (":11434", "Ollama"),
+    (":1234", "LM Studio"),
+    (":8080", "llama.cpp"),
+    (":5000", "LocalAI"),
+    (":8000", "vLLM"),
+)
+
+#: How long a discovery probe waits. Short on purpose: this runs while the user
+#: is looking at a list, and a runner that is not there refuses at once.
+DISCOVERY_TIMEOUT: Final = 1.5
+
+
+def discover_models(
+    endpoints: Iterable[str] | None = None,
+    *,
+    timeout: float = DISCOVERY_TIMEOUT,
+) -> list[ModelCandidate]:
+    """Ask each runner what models it has.
+
+    Probes concurrently, because doing it in series means a user with four
+    candidates waits for four timeouts on the ones that are not there, and
+    discovery runs every time the settings dialog opens.
+
+    Args:
+        endpoints: Base URLs to probe. Defaults to the known runners, plus
+            whatever the environment names.
+        timeout: Per-probe seconds.
+
+    Returns:
+        Every model found, de-duplicated by endpoint and name. A runner that does
+        not answer is simply absent -- not an error, because "not running" is the
+        normal state.
+    """
+    candidates = list(endpoints) if endpoints is not None else default_discovery_endpoints()
+    found: dict[tuple[str, str], ModelCandidate] = {}
+
+    with ThreadPoolExecutor(max_workers=max(1, len(candidates))) as pool:
+        futures = [pool.submit(_models_at, url, timeout) for url in candidates]
+        for future in futures:
+            try:
+                for model in future.result(timeout=timeout + 2):
+                    found.setdefault((model.endpoint, model.name), model)
+            except (TimeoutError, OSError, ValueError):
+                # Not running, not an OpenAI-compatible runner, or too slow to be
+                # worth waiting for. Either way there is nothing to offer.
+                continue
+
+    return sorted(found.values(), key=lambda model: (model.endpoint, model.name))
+
+
+def default_discovery_endpoints() -> list[str]:
+    """The endpoints to probe when the caller has not said otherwise."""
+    return extra_discovery_endpoints(None)
+
+
+def extra_discovery_endpoints(extra: Iterable[str] | None) -> list[str]:
+    """The known runners, plus whatever the caller adds.
+
+    A runner the user has already pointed at is always probed even if it is not
+    one of the known ports, so a model that is configured but not discovered
+    still shows up as available.
+    """
+    urls: list[str] = []
+    configured = _clean_endpoint(os.environ.get("LLEX_LOCAL_MODEL", ""))
+    if configured:
+        urls.append(configured)
+    for url in extra or ():
+        cleaned = _clean_endpoint(url)
+        if cleaned and cleaned not in urls:
+            urls.append(cleaned)
+    for port, _label in KNOWN_RUNNERS:
+        # `port` already carries its colon, so it is appended to the host rather
+        # than formatted into a host:port pair.
+        candidate = f"http://127.0.0.1{port}/v1"
+        if candidate not in urls:
+            urls.append(candidate)
+    return urls
+
+
+#: Settings key holding the model the user picked.
+MODEL_SETTING: Final = "model"
+
+#: Settings key holding the runner's base URL. Empty means "no model".
+ENDPOINT_SETTING: Final = "model_endpoint"
+
+
+def _saved_model_choice() -> tuple[str | None, str | None]:
+    """The endpoint and model the user chose, or ``(None, None)`` if never.
+
+    Read on every construction rather than cached, so a change made through the
+    settings dialog applies to the next conversation without a restart.
+
+    An explicitly empty endpoint means the user turned the model *off*, which is
+    different from having never chosen: it is respected rather than filled in
+    from the environment.
+    """
+    from .settings import SettingsStore
+
+    store = SettingsStore()
+    if MODEL_SETTING not in store.read() and ENDPOINT_SETTING not in store.read():
+        return (None, None)
+    raw_endpoint = store.get(ENDPOINT_SETTING, "")
+    raw_model = store.get(MODEL_SETTING, "")
+    endpoint = str(raw_endpoint or "").strip()
+    model = str(raw_model or "").strip()
+    if not endpoint and not model:
+        return ("", "")
+    return (endpoint, model)
+
+
+def save_model_choice(endpoint: str, model: str) -> bool:
+    """Remember the user's choice. True when it was written.
+
+    An empty endpoint with an empty model is how "no model" is recorded, so the
+    environment cannot quietly put one back.
+    """
+    from .settings import SettingsStore
+
+    return SettingsStore().update(
+        {ENDPOINT_SETTING: (endpoint or "").strip(), MODEL_SETTING: (model or "").strip()}
+    )
+
+
+def clear_model_choice() -> bool:
+    """Forget the choice, so the environment applies again."""
+    from .settings import SettingsStore
+
+    return SettingsStore().update({ENDPOINT_SETTING: "", MODEL_SETTING: ""})
+
+
+def _port_of(endpoint: str) -> str:
+    """The port from a base URL, or ``""`` when there is not a usable one.
+
+    ``urlparse`` rather than a split, so a port in a path or a password
+    containing a colon cannot be mistaken for one.
+    """
+    try:
+        parsed = urllib.parse.urlparse(_clean_endpoint(endpoint))
+        return str(parsed.port or "")
+    except ValueError:
+        return ""
+
+
+def _get_json(url: str, timeout: float) -> Any:
+    """GET a URL and parse the body as JSON, or return ``None``.
+
+    Uses `http.client` rather than `urllib.request` for one specific reason: when
+    a connection is refused, `urllib` leaves the socket it opened unclosed, and
+    the resulting `ResourceWarning` is raised as an error by this project's test
+    configuration. Discovery probes known-risky ports precisely when nothing is
+    listening, so that is the *normal* path here rather than an edge case.
+    `http.client` lets the connection be closed explicitly on every branch.
+
+    Returns ``None`` for every failure. Discovery runs while the user is looking
+    at a list, and a runner that is not there is not an error worth reporting.
+    """
+    parts = urllib.parse.urlsplit(url)
+    if parts.scheme not in {"http", "https"} or not parts.hostname:
+        return None
+    port = parts.port or (443 if parts.scheme == "https" else 80)
+    path = parts.path or "/"
+    if parts.query:
+        path = f"{path}?{parts.query}"
+
+    connection: http.client.HTTPConnection | None = None
+    try:
+        if parts.scheme == "https":  # pragma: no cover - no local runner is https
+            import ssl
+
+            connection = http.client.HTTPSConnection(
+                parts.hostname, port, timeout=timeout, context=ssl.create_default_context()
+            )
+        else:
+            connection = http.client.HTTPConnection(parts.hostname, port, timeout=timeout)
+        connection.request("GET", path, headers={"Accept": "application/json"})
+        response = connection.getresponse()
+        body = response.read()
+        if response.status != 200:
+            return None
+        return json.loads(body)
+    except (OSError, ValueError, http.client.HTTPException):
+        return None
+    finally:
+        if connection is not None:
+            connection.close()
+
+
+def _models_at(endpoint: str, timeout: float) -> list[ModelCandidate]:
+    """Ask one runner for its models, or return nothing."""
+    base = _clean_endpoint(endpoint)
+    if not base:
+        return []
+    payload = _get_json(f"{base}/models", timeout)
+
+    entries = payload.get("data") if isinstance(payload, Mapping) else None
+    if not isinstance(entries, list):
+        return []
+
+    models: list[ModelCandidate] = []
+    for entry in entries:
+        if not isinstance(entry, Mapping):
+            continue
+        name = str(entry.get("id") or entry.get("name") or "").strip()
+        if not name:
+            continue
+        models.append(ModelCandidate(endpoint=base, name=name, detail=_model_detail(entry)))
+    return models
+
+
+def _model_detail(entry: Mapping[str, Any]) -> str:
+    """A short description of a model, if the runner offers one."""
+    details = entry.get("details")
+    if isinstance(details, Mapping):
+        parts = [str(details[key]) for key in ("family", "parameter_size") if details.get(key)]
+        if parts:
+            return " · ".join(parts)
+    owned = entry.get("owned_by")
+    return str(owned) if owned else ""
 
 
 def _build_user_prompt(task: str, source: str, instruction: str) -> str:

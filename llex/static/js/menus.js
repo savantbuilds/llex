@@ -45,11 +45,43 @@ export function createMenus(options) {
     applyZoom(ZOOM_LEVELS[next]);
   };
 
+  /**
+   * Leave focus mode if it is on, and report whether it did.
+   *
+   * Focus mode hides the menu bar and the ribbon, which means it also hides the
+   * menu item that turned it on. Without this, entering it is a one-way door
+   * whose only exit is restarting the app, so it is called from the Escape key
+   * and from the button focus mode shows in its place.
+   *
+   * @returns {boolean} True when focus mode was on and is now off.
+   */
+  function exitFocusMode() {
+    if (!editorRoot || !document.body.classList.contains('focus-mode')) return false;
+    toggleFocusMode();
+    return true;
+  }
+
   function toggleFocusMode() {
     if (!editorRoot) return;
     const active = document.body.classList.toggle('focus-mode');
-    byId('menu-focus')?.setAttribute('aria-checked', active ? 'true' : 'false');
-    flash(status, active ? 'Focus mode on' : 'Focus mode off');
+    const item = byId('menu-focus');
+    if (item) {
+      item.setAttribute('aria-checked', active ? 'true' : 'false');
+      // The label has to say what the item will *do*, which changes with state.
+      const label = item.querySelector('.menu-label') || item;
+      if (label.textContent) label.textContent = active ? 'Leave Focus Mode' : 'Focus Mode';
+    }
+    // Focus mode covers the chrome, so it brings its own way out.
+    //
+    // `setAttribute('hidden', 'false')` would *not* show it: the attribute's
+    // presence is what hides an element, whatever its value. It has to be
+    // removed.
+    const exit = byId('focus-exit');
+    if (exit) {
+      if (active) exit.removeAttribute('hidden');
+      else exit.setAttribute('hidden', '');
+    }
+    flash(status, active ? 'Focus mode on — press Esc to leave' : 'Focus mode off');
     if (actions.onZoom) actions.onZoom(zoom);
   }
 
@@ -73,6 +105,7 @@ export function createMenus(options) {
     ['menu-zoom-out', () => stepZoom(-1)],
     ['menu-zoom-reset', () => applyZoom(100)],
     ['menu-focus', toggleFocusMode],
+    ['focus-exit', exitFocusMode],
     ['menu-print', () => window.print()],
   ];
 
@@ -87,6 +120,13 @@ export function createMenus(options) {
   // -- Keyboard shortcuts ------------------------------------------------- //
 
   document.addEventListener('keydown', (event) => {
+    // Escape leaves focus mode, whatever else has focus. It has to be checked
+    // before the modifier gate below, because the exit control is the only one
+    // visible while focus mode is on and Escape is the one users try first.
+    if (event.key === 'Escape' && exitFocusMode()) {
+      event.preventDefault();
+      return;
+    }
     if (!hasModifier(event)) return;
     const key = event.key.toLowerCase();
 
@@ -108,5 +148,5 @@ export function createMenus(options) {
     });
   });
 
-  return { applyZoom, toggleFocusMode, get zoom() { return zoom; } };
+  return { applyZoom, toggleFocusMode, exitFocusMode, get zoom() { return zoom; } };
 }

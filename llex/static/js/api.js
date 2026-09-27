@@ -106,6 +106,11 @@ export const api = {
   conflict: () => request('/api/document/conflict'),
   acceptDisk: () => request('/api/document/accept-disk', { method: 'POST' }),
 
+  models: () => request('/api/models'),
+  refreshModels: () => request('/api/models/refresh', { method: 'POST' }),
+  selectModel: (endpoint, model) =>
+    request('/api/models', { method: 'POST', body: { endpoint, model } }),
+
   exportDocument: (html, format) =>
     request('/api/export', { method: 'POST', body: { html, format } }),
 

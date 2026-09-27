@@ -286,6 +286,52 @@ window.AbortController = AbortController;
     return out;
   });
 
+  // Focus mode, and the model picker.
+  result.focusCheck = probe(function () {
+    var doc = dom.window.document;
+    var out = {};
+    var item = doc.getElementById('menu-focus');
+    var exit = doc.getElementById('focus-exit');
+
+    out.startsOff = dom.window.document.body.classList.contains('focus-mode') === false;
+    out.exitStartsHidden = exit.hidden === true;
+
+    item.click();
+    out.turnsOn = dom.window.document.body.classList.contains('focus-mode') === true;
+    out.exitAppears = exit.hidden === false;
+    out.itemChecked = item.getAttribute('aria-checked') === 'true';
+    out.itemRenamed = /leave/i.test(item.textContent);
+
+    // Escape has to work, and without a modifier key.
+    var event = new dom.window.KeyboardEvent('keydown', { key: 'Escape', bubbles: true });
+    dom.window.document.dispatchEvent(event);
+    out.escapeLeaves = dom.window.document.body.classList.contains('focus-mode') === false;
+
+    // And the visible control, for a user who does not think to press Escape.
+    item.click();
+    exit.click();
+    out.buttonLeaves = dom.window.document.body.classList.contains('focus-mode') === false;
+    out.exitHiddenAgain = exit.hidden === true;
+    return out;
+  });
+
+  result.modelCheck = probe(function () {
+    var llex = window.llex;
+    var doc = dom.window.document;
+    var select = doc.getElementById('model-select');
+    var endpoint = doc.getElementById('model-endpoint');
+    var status = doc.getElementById('model-status');
+    var out = {
+      hasSelect: Boolean(select),
+      hasEndpoint: Boolean(endpoint),
+      hasStatus: Boolean(status),
+      hasPicker: Boolean(llex.settings && llex.settings.models),
+    };
+    if (!out.hasPicker) return out;
+    out.selectionDefaultsToNoModel = llex.settings.models.selection().model === '';
+    return out;
+  });
+
   result.undoCheck = (function () {
     if (!window.llex || !window.llex.editor) return { skipped: true };
     var ed = window.llex.editor;
@@ -820,3 +866,69 @@ class TestImagePanel:
     def test_the_printable_width_is_positive(self, image_result: dict[str, object]) -> None:
         """Every size clamp is relative to it, so zero would silently break them."""
         assert image_result.get("printableWidth", 0) > 0
+
+@pytest.fixture(scope="module")
+def focus_result(boot_result: dict[str, object]) -> dict[str, object]:
+    """The focus-mode probe's report from the single boot."""
+    return dict(boot_result.get("focusCheck") or {})
+
+
+class TestFocusModeIsReversible:
+    """Focus mode hides the menu bar, and with it the menu item that turned it on.
+
+    Without a way back it is a one-way door whose only exit is restarting the
+    app, which is what it was.
+    """
+
+    def test_the_probe_ran(self, focus_result: dict[str, object]) -> None:
+        assert focus_result, "no focus-mode probe was reported"
+        assert "threw" not in focus_result, focus_result.get("threw")
+
+    def test_it_starts_off_with_the_exit_hidden(self, focus_result: dict[str, object]) -> None:
+        assert focus_result.get("startsOff") is True
+        assert focus_result.get("exitStartsHidden") is True
+
+    def test_the_menu_item_turns_it_on(self, focus_result: dict[str, object]) -> None:
+        assert focus_result.get("turnsOn") is True
+        assert focus_result.get("itemChecked") is True
+
+    def test_the_exit_appears_when_it_is_on(self, focus_result: dict[str, object]) -> None:
+        """The menu item is gone by then, so something has to replace it."""
+        assert focus_result.get("exitAppears") is True
+
+    def test_the_item_says_what_it_will_do(self, focus_result: dict[str, object]) -> None:
+        assert focus_result.get("itemRenamed") is True
+
+    def test_escape_leaves_it(self, focus_result: dict[str, object]) -> None:
+        assert focus_result.get("escapeLeaves") is True
+
+    def test_the_visible_control_leaves_it(self, focus_result: dict[str, object]) -> None:
+        """For a user who does not think to press Escape."""
+        assert focus_result.get("buttonLeaves") is True
+        assert focus_result.get("exitHiddenAgain") is True
+
+
+@pytest.fixture(scope="module")
+def model_result(boot_result: dict[str, object]) -> dict[str, object]:
+    """The model picker's report from the single boot."""
+    return dict(boot_result.get("modelCheck") or {})
+
+
+class TestTheModelIsChosenByTheUser:
+    """It used to be configurable only by an environment variable."""
+
+    def test_the_probe_ran(self, model_result: dict[str, object]) -> None:
+        assert model_result, "no model-picker probe was reported"
+        assert "threw" not in model_result, model_result.get("threw")
+
+    def test_the_controls_exist(self, model_result: dict[str, object]) -> None:
+        assert model_result.get("hasSelect") is True
+        assert model_result.get("hasEndpoint") is True
+        assert model_result.get("hasStatus") is True
+
+    def test_the_picker_is_wired(self, model_result: dict[str, object]) -> None:
+        assert model_result.get("hasPicker") is True
+
+    def test_it_offers_no_model_as_the_default(self, model_result: dict[str, object]) -> None:
+        """Turning the model off has to be possible without editing a file."""
+        assert model_result.get("selectionDefaultsToNoModel") is True

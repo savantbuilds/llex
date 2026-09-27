@@ -110,13 +110,34 @@ llex: local API on http://127.0.0.1:55472
 ## Connect a local model
 
 LLex speaks the OpenAI-compatible chat-completions API, so anything you already
-run works. Set the endpoint and model name:
+run works.
+
+**Choose it in the app.** Open **View → Settings → Assistant model**. LLex looks
+for Ollama, LM Studio, llama.cpp, LocalAI and vLLM on their usual ports and lists
+whatever they report. Pick one, or choose *No model* to use the offline tools
+only. The choice is written to your user settings
+(`%APPDATA%\LLex\settings.json` on Windows, `~/.config/llex/` elsewhere) and
+survives a restart. **Search again** re-probes, for a runner you have just
+started.
+
+The **Runner** box is editable, for anything on a port LLex does not guess. The
+list of known runners is a convenience, not a limit.
+
+A model that is configured but not currently answering is still offered, marked
+*(not found)*, so a choice cannot be lost just because the runner is down.
+
+**Or set it in the environment**, which is what CI and scripted use want:
 
 | Variable | Default | Meaning |
 | --- | --- | --- |
 | `LLEX_LOCAL_MODEL` | *(unset)* | Base URL, e.g. `http://127.0.0.1:11434/v1` |
 | `LLEX_LOCAL_MODEL_NAME` | `local-model` | Model identifier to request |
 | `LLEX_LOCAL_MODEL_TIMEOUT` | `120` | Per-request timeout, seconds |
+
+A choice made in the settings dialog wins over the environment, so a variable
+left over from a shell you launched from will not quietly override what you
+picked. Choosing *No model* is a decision in its own right: it switches to the
+offline engine and is not replaced by whatever the environment names.
 
 ```bash
 # Ollama
@@ -260,9 +281,14 @@ to 3.13.
 | `Ctrl/Cmd + B / I / U` | Bold, italic, underline |
 | `Ctrl/Cmd + Z / Y` | Undo, redo |
 | `Ctrl/Cmd + = / - / 0` | Zoom in, out, reset |
+| `Esc` | Leave focus mode |
 
 In the find bar, `Enter` goes to the next match, `Shift+Enter` to the previous,
 `Enter` in the replace field performs the replacement, and `Esc` always closes.
+
+**Focus mode** (*View → Focus Mode*) hides the menu bar, the ribbon and the side
+panels. Because that hides the menu item that turned it on, it shows a small
+**Leave focus mode** control of its own, and `Esc` also works.
 
 ## Not losing your work
 

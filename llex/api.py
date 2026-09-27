@@ -52,6 +52,9 @@ from .llm import (
     AssistantUnavailableError,
     Engine,
     LocalLLMBridge,
+    discover_models,
+    extra_discovery_endpoints,
+    save_model_choice,
 )
 
 __all__ = ["API_TOKEN_HEADER", "AppServices", "build_app", "create_app"]
@@ -186,6 +189,27 @@ class AssistantPayload(BaseModel):
         if tone not in Tone.ALL:
             raise ValueError(f"unknown tone {value!r}; expected one of {', '.join(Tone.ALL)}")
         return tone
+
+
+class ModelChoice(BaseModel):
+    """A model the user picked.
+
+    Both fields are permitted to be empty, which is how "no model" is expressed:
+    an explicitly empty endpoint is a decision, and is not filled back in from
+    the environment the way an absent one is.
+    """
+
+    endpoint: str = Field(default="", max_length=300)
+    model: str = Field(default="", max_length=200)
+
+    @field_validator("endpoint", "model")
+    @classmethod
+    def _no_newlines(cls, value: str) -> str:
+        # These go into a URL and a settings file. A newline in either is never
+        # legitimate and would be a request-splitting hazard in the first.
+        if "\n" in value or "\r" in value:
+            raise ValueError("must not contain a line break")
+        return value.strip()
 
 
 class ExportPayload(BaseModel):
@@ -550,6 +574,67 @@ def _register_routes(app: FastAPI) -> None:
         return {"status": "exported", **result.to_dict()}
 
     # -- assistant --------------------------------------------------------- #
+
+    @app.get("/api/models")
+    def list_models() -> dict[str, Any]:
+        """What local models this machine can offer, and which one is in use.
+
+        Probes the runners LLex knows about and reports what answers. A runner
+        that is not running is simply absent from the list -- that is the normal
+        state, not a failure, so the endpoint reports what it found rather than
+        refusing.
+        """
+        bridge = current().bridge
+        chosen = {
+            "endpoint": getattr(bridge, "endpoint", ""),
+            "model": getattr(bridge, "model", ""),
+        }
+        candidates = [
+            candidate.to_dict()
+            for candidate in discover_models(
+                extra_discovery_endpoints([chosen["endpoint"]] if chosen["endpoint"] else None)
+            )
+        ]
+        return {
+            "models": candidates,
+            "current": chosen,
+            "backend": getattr(bridge, "backend", ""),
+            "source": getattr(bridge, "source", "default"),
+        }
+
+    @app.post("/api/models")
+    def select_model(choice: ModelChoice) -> dict[str, Any]:
+        """Use the model the user picked, and remember it.
+
+        The choice is saved rather than applied only in memory, so it survives a
+        restart. An empty pair means "no model", which switches the assistant to
+        the deterministic offline engine and is *not* quietly replaced by
+        whatever the environment names.
+        """
+        bridge = current().bridge
+        configure = getattr(bridge, "configure", None)
+        if configure is None:
+            raise HTTPException(
+                HTTP_NOT_IMPLEMENTED,
+                "this assistant backend does not take a model choice",
+            )
+        configure(endpoint=choice.endpoint, model=choice.model)
+        saved = save_model_choice(choice.endpoint, choice.model)
+        return {
+            "status": "saved" if saved else "not-saved",
+            "current": {
+                "endpoint": getattr(bridge, "endpoint", ""),
+                "model": getattr(bridge, "model", ""),
+            },
+            "backend": getattr(bridge, "backend", ""),
+            "source": "settings" if saved else "default",
+            "error": getattr(bridge, "last_error", None),
+        }
+
+    @app.post("/api/models/refresh")
+    def refresh_models() -> dict[str, Any]:
+        """Probe again, for a runner the user has just started."""
+        return list_models()
 
     @app.post("/api/assistant/summarize")
     def summarize(payload: AssistantPayload) -> dict[str, str]:

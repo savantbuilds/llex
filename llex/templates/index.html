@@ -61,7 +61,7 @@
         <div class="dropdown-divider" role="separator"></div>
         <button type="button" class="dropdown-item" id="menu-toggle-outline" role="menuitemcheckbox" aria-checked="false">Document Outline</button>
         <button type="button" class="dropdown-item" id="menu-toggle-assistant" role="menuitemcheckbox" aria-checked="false">LLex Assistant</button>
-        <button type="button" class="dropdown-item" id="menu-focus" role="menuitemcheckbox" aria-checked="false">Focus Mode</button>
+        <button type="button" class="dropdown-item" id="menu-focus" role="menuitemcheckbox" aria-checked="false">Focus Mode <kbd>Esc</kbd></button>
       </div>
     </div>
 
@@ -352,6 +352,23 @@
       <input type="number" id="margin-left" min="0.25" max="4" step="0.25" value="1">
     </div>
 
+    <h3>Assistant model</h3>
+    <div class="modal-row">
+      <label for="model-select">Model</label>
+      <select id="model-select" aria-describedby="model-status">
+        <option value="">Looking for local models…</option>
+      </select>
+    </div>
+    <div class="modal-row">
+      <label for="model-endpoint">Runner</label>
+      <input type="text" id="model-endpoint" placeholder="http://127.0.0.1:11434/v1" spellcheck="false" autocomplete="off">
+    </div>
+    <div class="modal-row">
+      <span class="model-label"></span>
+      <button type="button" id="btn-model-refresh" class="btn btn-secondary">Search again</button>
+    </div>
+    <p id="model-status" class="modal-note" role="status" aria-live="polite">Checking Ollama, LM Studio, llama.cpp and others…</p>
+
     <h3>Theme</h3>
     <div class="modal-column">
       <label for="theme-bg">App background</label>
@@ -371,6 +388,12 @@
     <button type="button" id="btn-settings-save" class="btn btn-primary">Save</button>
   </div>
 </div>
+
+<!-- The way out of focus mode.
+     Focus mode hides the menu bar and the ribbon, and with them the menu item
+     that turned it on, so without a control of its own it is a one-way door
+     whose only exit is restarting the app. -->
+<button type="button" id="focus-exit" class="focus-exit" title="Leave focus mode (Esc)" aria-label="Leave focus mode" hidden>Leave focus mode <kbd>Esc</kbd></button>
 
 <!-- Image panel -->
 <div id="image-panel" class="image-panel" role="dialog" aria-label="Image" hidden>
