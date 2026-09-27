@@ -20,6 +20,8 @@ from llex.document import (
     StyleDefinition,
 )
 
+from .conftest import content_is_preserved
+
 
 class TestConstruction:
     def test_defaults(self) -> None:
@@ -146,7 +148,10 @@ class TestSerialisation:
         target = original.save(tmp_path / "doc.llex")
         loaded = Document.load(target)
         assert loaded.title == original.title
-        assert loaded.content == original.content
+        # The stored form is laid out one block per line, so the loaded HTML is
+        # not byte-identical to the editor's. What has to survive is the text and
+        # the structure, which is what `content_is_preserved` checks.
+        assert content_is_preserved(original.content, loaded.content)
         assert loaded.page == original.page
         assert loaded.styles == original.styles
         assert loaded.created_at == original.created_at
@@ -322,7 +327,7 @@ class TestBackups:
 
         backup = tmp_path / "doc.1.llex.bak"
         assert backup.is_file()
-        assert Document.load(backup).content == original
+        assert content_is_preserved(Document.load(backup).content, original)
 
     def test_backups_are_numbered_newest_first(self, tmp_path: Path) -> None:
         target = tmp_path / "doc.llex"
@@ -335,8 +340,8 @@ class TestBackups:
 
         newest = Document.load(tmp_path / "doc.1.llex.bak").content
         previous = Document.load(tmp_path / "doc.2.llex.bak").content
-        assert newest == versions[1]
-        assert previous == versions[0]
+        assert content_is_preserved(newest, versions[1])
+        assert content_is_preserved(previous, versions[0])
 
     def test_the_rotation_is_bounded(self, tmp_path: Path) -> None:
         """Unbounded backups fill a disk without ever helping."""
@@ -379,7 +384,8 @@ class TestBackups:
         # rotate-on-every-write would have left.
         backups = sorted(path.name for path in tmp_path.glob("*.bak"))
         assert backups == ["doc.1.llex.bak", "doc.2.llex.bak", "doc.3.llex.bak"]
-        assert Document.load(tmp_path / "doc.1.llex.bak").content.endswith("version 1</p></div>")
+        newest = Document.load(tmp_path / "doc.1.llex.bak").content
+        assert content_is_preserved(newest, "<div class='page'><p>version 1</p></div>")
 
     def test_a_saved_file_is_still_readable(self, tmp_path: Path) -> None:
         """The backup must not be the only valid file after a rotation."""

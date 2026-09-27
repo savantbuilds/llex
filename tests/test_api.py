@@ -15,7 +15,7 @@ from fastapi.testclient import TestClient
 from llex.api import API_TOKEN_HEADER, AppServices, build_app
 from llex.document import Document
 
-from .conftest import SAMPLE_HTML, StubEngine
+from .conftest import SAMPLE_HTML, StubEngine, content_is_preserved
 
 #: The webview always addresses the server as loopback; the API rejects any
 #: other ``Host`` header to block DNS rebinding, so ad-hoc clients must too.
@@ -124,7 +124,7 @@ class TestDocumentLifecycle:
         assert response.status_code == 200
         assert response.json()["status"] == "saved"
         assert target.is_file()
-        assert Document.load(target).content == '<div class="page"><p>saved</p></div>'
+        assert content_is_preserved(Document.load(target).content, '<div class="page"><p>saved</p></div>')
 
     def test_save_without_a_window_is_rejected(self, client: TestClient, auth: dict[str, str]) -> None:
         response = client.post("/api/document/save", json={"html": SAMPLE_HTML}, headers=auth)
@@ -338,7 +338,7 @@ class TestAutosave:
         assert response.status_code == 200
         body = response.json()
         assert body["status"] == "saved"
-        assert Document.load(tmp_path / "doc.llex").content == SAMPLE_HTML
+        assert content_is_preserved(Document.load(tmp_path / "doc.llex").content, SAMPLE_HTML)
 
     def test_never_raises_a_dialog(self, api_client: TestClient, services: AppServices) -> None:
         """Autosave that can open a Save As dialog would steal focus mid-sentence,

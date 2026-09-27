@@ -101,6 +101,33 @@ def auth(token: str) -> dict[str, str]:
     return {API_TOKEN_HEADER: token}
 
 
+def content_is_preserved(before: str, after: str) -> bool:
+    """Whether two HTML fragments read as the same document.
+
+    `.llex` files are stored with the content laid out one block per line, so a
+    round trip is not byte-identical by design. What must not change is the text,
+    the block structure, or the inline formatting -- compared as parsed trees,
+    because comparing strings would only prove that the formatter is idempotent.
+    """
+    from llex.markup import parse_document
+
+    def shape(html: str) -> list[tuple[str, object, tuple[tuple[str, str], ...]]]:
+        parsed = parse_document(html)
+        return [
+            (
+                block.kind,
+                block.level,
+                tuple(
+                    (run.text, repr(run.style).strip())
+                    for run in block.iter_leaf_runs()
+                ),
+            )
+            for block in parsed.iter_blocks()
+        ]
+
+    return shape(before) == shape(after)
+
+
 @pytest.fixture
 def api_client(app: Any, auth: dict[str, str]) -> Iterator[TestClient]:
     """A client that already carries the token.

@@ -225,9 +225,66 @@ to 3.13.
 | `Ctrl/Cmd + S` | Save |
 | `Ctrl/Cmd + Shift + S` | Save as |
 | `Ctrl/Cmd + P` | Print |
+| `Ctrl/Cmd + F` | Find |
+| `Ctrl/Cmd + H` | Find and replace |
 | `Ctrl/Cmd + B / I / U` | Bold, italic, underline |
 | `Ctrl/Cmd + Z / Y` | Undo, redo |
 | `Ctrl/Cmd + = / - / 0` | Zoom in, out, reset |
+
+In the find bar, `Enter` goes to the next match, `Shift+Enter` to the previous,
+`Enter` in the replace field performs the replacement, and `Esc` always closes.
+
+## Not losing your work
+
+LLex saves the open file a few seconds after you stop typing, so closing the
+window by accident costs the last few seconds rather than the document. Before
+each save the previous version is rotated to `name.1.llex.bak` beside it, with
+older versions kept up to five, so a save that overwrites something you wanted
+can be undone from disk.
+
+Rotating only happens when the content actually changed. Autosave rewrites the
+file often, and a backup for each of those would bury the few versions that
+differ.
+
+If the file is changed by something else while you have it open, LLex says so
+instead of silently overwriting the other version. The comparison is by content
+digest rather than by timestamp, so LLex's own autosave never reports a conflict
+against itself.
+
+## The `.llex` format
+
+A `.llex` file is UTF-8 JSON with a `format_version` discriminator, and the
+content is stored one block per line so that a `.llex` file is reviewable in
+version control — correcting one word changes one line rather than rewriting the
+whole file.
+
+```json
+{
+  "format_version": 3,
+  "title": "Notes",
+  "content": [
+    "<h1>Alpha</h1>",
+    "<p>first para</p>"
+  ],
+  "page": { "width": 8.5, "height": 11.0, "...": "..." },
+  "styles": { "Normal": { "...": "..." } }
+}
+```
+
+Files written by versions 1 and 2 are still read: version 1 used an
+`html_content` key, and version 2 stored the whole document as one JSON string.
+
+To check a file without opening the editor:
+
+```console
+$ python -m llex.validate notes.llex
+notes.llex: OK
+
+$ python -m llex.validate notes.llex --json
+```
+
+It reports what is wrong and where, and exits non-zero if the document will not
+open.
 
 ## License
 

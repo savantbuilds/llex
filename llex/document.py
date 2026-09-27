@@ -27,13 +27,13 @@ import hashlib
 import json
 import os
 import tempfile
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Final
 
-from .markup import count_words, to_plain_text
+from .markup import count_words, format_content_html, to_plain_text
 
 __all__ = [
     "DEFAULT_CONTENT",
@@ -47,7 +47,7 @@ __all__ = [
 ]
 
 #: Bumped whenever the on-disk shape changes in a way that needs migration.
-FORMAT_VERSION: Final = 2
+FORMAT_VERSION: Final = 3
 
 #: The HTML a brand-new document starts with. Matches the editor's own default
 #: so a freshly opened window and a freshly created file look identical.
@@ -62,6 +62,33 @@ MAX_BACKUPS: Final = 5
 
 #: Legacy key from FORMAT_VERSION 1, still read for backwards compatibility.
 _LEGACY_CONTENT_KEY: Final = "html_content"
+
+
+def _content_from(data: Mapping[str, Any]) -> str:
+    """Read the document body out of a parsed ``.llex`` file.
+
+    Three shapes have to be accepted, because the storage form changed and a
+    document must never fail to open over it:
+
+    - **A list of lines** as written by the current version, one block per entry.
+    - **A string** as written by earlier versions, where the whole document was
+      one JSON string with escaped newlines.
+    - **The legacy ``html_content`` key** from version 1.
+
+    Anything else falls back to the default content. Refusing to open would be
+    worse than opening a blank document the user can see is blank, and the
+    original bytes are still on disk.
+    """
+    value = data.get("content")
+    if value is None:
+        value = data.get(_LEGACY_CONTENT_KEY)
+    if isinstance(value, str):
+        return value
+    if isinstance(value, Sequence) and not isinstance(value, (str, bytes)):
+        lines = [line for line in value if isinstance(line, str)]
+        if lines:
+            return "\n".join(lines)
+    return DEFAULT_CONTENT
 
 #: 96 CSS pixels per inch, matching the browser's definition of 1in.
 DPI: Final = 96.0
@@ -485,7 +512,12 @@ class Document:
             "title": self.title,
             "created_at": self.created_at.isoformat(),
             "modified_at": self.modified_at.isoformat(),
-            "content": self.content,
+            # One block per array entry, which puts one block per line in the
+            # serialised JSON. The editor hands over a single line, and a JSON
+            # string cannot help that: its newlines are escaped, so the whole
+            # document would still be one line and correcting one word would
+            # still rewrite the entire file in version control.
+            "content": format_content_html(self.content).split("\n"),
             "page": self.page.to_dict(),
             "styles": {name: style.to_dict() for name, style in self.styles.items()},
         }
@@ -506,10 +538,7 @@ class Document:
             )
 
         now = _utcnow()
-        content = data.get("content") or data.get(_LEGACY_CONTENT_KEY) or DEFAULT_CONTENT
-        if not isinstance(content, str):
-            content = DEFAULT_CONTENT
-
+        content = _content_from(data)
         raw_styles = data.get("styles")
         styles: dict[str, StyleDefinition] = {}
         if isinstance(raw_styles, Mapping):
@@ -570,6 +599,7 @@ class Document:
         target = target.expanduser()
 
         self.touch()
+
         payload = json.dumps(self.to_dict(), indent=2, ensure_ascii=False)
 
         try:
@@ -612,8 +642,14 @@ class Document:
             return False
         if not isinstance(existing, dict):
             return False
-        content = existing.get("content", existing.get(_LEGACY_CONTENT_KEY))
-        return existing.get("title") == self.title and content == self.content
+        content = _content_from(existing)
+        if not content:
+            return False
+        # Compared in the stored form, which is what the file holds. The
+        # in-memory content is the editor's own HTML and is laid out for writing
+        # by `to_dict`, so comparing the two directly would report every save as
+        # a change and rotate a backup each time.
+        return existing.get("title") == self.title and content == format_content_html(self.content)
 
     def _rotate_backup(self, target: Path, max_backups: int) -> None:
         """Shift ``name.1.llex.bak`` .. ``name.N.llex.bak`` along, keeping the newest.

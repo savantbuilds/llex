@@ -109,6 +109,20 @@ _NAMED_COLORS: Final = {
 
 
 @dataclass(frozen=True, slots=True)
+class ScaffoldRef:
+    """A scaffold attached to a span of text.
+
+    A scaffold is a reusable instruction the user has attached to a phrase, and
+    it is document content rather than a UI hint. It has to survive the parse, so
+    it is carried on the run like any other inline style; leaving it in the HTML
+    alone would mean every exporter silently discarded the user's prompts.
+    """
+
+    id: str = ""
+    instruction: str = ""
+
+
+@dataclass(frozen=True, slots=True)
 class InlineStyle:
     """Inline formatting applied to a span of text.
 
@@ -123,6 +137,7 @@ class InlineStyle:
     code: bool = False
     color: str | None = None
     highlight: str | None = None
+    scaffold: ScaffoldRef | None = None
 
     @property
     def is_plain(self) -> bool:
@@ -173,6 +188,17 @@ class Block:
         yield self
         for child in self.children:
             yield from child.iter_blocks()
+
+    def iter_leaf_runs(self) -> Iterator[TextRun]:
+        """Every text run in this block, descending into nested blocks.
+
+        Used to compare two documents by what they actually say and how it is
+        formatted, rather than by the exact bytes of their serialisation.
+        """
+        if self.runs:
+            yield from self.runs
+        for child in self.children:
+            yield from child.iter_leaf_runs()
 
 
 @dataclass(frozen=True, slots=True)
@@ -263,7 +289,11 @@ def _declarations(style_attr: str | None) -> dict[str, str]:
     return declarations
 
 
-def _style_from_tags(tag: str, declarations: dict[str, str]) -> InlineStyle:
+def _style_from_tags(
+    tag: str,
+    declarations: dict[str, str],
+    attrs: dict[str, str | None] | None = None,
+) -> InlineStyle:
     """Combine a tag's semantics with its inline style attribute."""
     bold = tag in {"strong", "b"}
     italic = tag in {"em", "i"}
@@ -300,7 +330,23 @@ def _style_from_tags(tag: str, declarations: dict[str, str]) -> InlineStyle:
         code=code,
         color=normalize_color(declarations.get("color")),
         highlight=highlight,
+        scaffold=_scaffold_from(attrs),
     )
+
+
+def _scaffold_from(attrs: dict[str, str | None] | None) -> ScaffoldRef | None:
+    """Read a scaffold off an element's attributes, if it has one.
+
+    A scaffold is only recognised when the element carries a non-empty
+    ``data-scaffold``; an id with no instruction is not a scaffold the user can
+    act on, and inventing an empty one would render as a stray badge.
+    """
+    if not attrs:
+        return None
+    identifier = (attrs.get("data-scaffold") or "").strip()
+    if not identifier:
+        return None
+    return ScaffoldRef(id=identifier, instruction=(attrs.get("data-instruction") or "").strip())
 
 
 def _align_from(attrs: dict[str, str | None]) -> str | None:
@@ -331,6 +377,7 @@ def _merge_style(base: InlineStyle, extra: InlineStyle) -> InlineStyle:
         code=base.code or extra.code,
         color=extra.color or base.color,
         highlight=extra.highlight or base.highlight,
+        scaffold=extra.scaffold or base.scaffold,
     )
 
 
@@ -548,7 +595,7 @@ class _DocumentBuilder(HTMLParser):
             self._styles.append(
                 _merge_style(
                     self._styles[-1],
-                    _style_from_tags(tag, _declarations(attrs.get("style"))),
+                    _style_from_tags(tag, _declarations(attrs.get("style")), attrs),
                 )
             )
             return
@@ -760,3 +807,132 @@ _WORD_RE: Final = re.compile(r"\w+(?:['\u2019]\w+)*", re.UNICODE)
 def count_words(text: str) -> int:
     """Count words the way a word processor status bar does."""
     return len(_WORD_RE.findall(text))
+
+
+# --------------------------------------------------------------------------- #
+# Storage form
+# --------------------------------------------------------------------------- #
+
+#: Tags that start a new top-level block. A newline may be inserted before and
+#: after one of these without changing what the document means, because HTML
+#: ignores whitespace that sits between block-level elements.
+_BLOCK_TAGS: Final = frozenset(
+    {
+        "address", "article", "aside", "blockquote", "details", "div", "dl",
+        "fieldset", "figcaption", "figure", "footer", "form", "h1", "h2", "h3",
+        "h4", "h5", "h6", "header", "hgroup", "hr", "li", "main", "nav", "ol",
+        "p", "pre", "section", "table", "ul",
+    }
+)
+
+#: Tags whose whitespace *is* content. A newline inside one of these is visible
+#: to the reader, so the formatter must never touch what lies between its start
+#: and end tag.
+_PRESERVE_INSIDE: Final = frozenset({"pre", "code", "textarea", "script", "style"})
+
+
+def format_content_html(html: str) -> str:
+    """Re-lay an HTML fragment with one top-level block per line.
+
+    The editor's own HTML is a single line, so storing it verbatim makes a
+    ``.llex`` file useless in version control: correcting one word rewrites the
+    entire file, and ``git diff`` reports every character of the document as
+    changed. Splitting on block boundaries is what makes the format reviewable.
+
+    A newline is inserted at exactly one kind of position: between two elements,
+    where the left-hand one is a block-level element. That is the only place HTML
+    ignores the whitespace, so it is the only place it is safe to add any -- a
+    newline after ``<p>`` or before ``</p>`` would introduce visible leading and
+    trailing space into the paragraph, and adjacent inline elements are left
+    joined for the same reason.
+
+    Whitespace inside ``<pre>``, ``<code>`` and friends is content and is copied
+    verbatim. That restriction is the whole safety argument: the transformation
+    is defined so that it cannot change what the document reads as.
+
+    Args:
+        html: The editor's HTML.
+
+    Returns:
+        The same document, with newlines between block-level elements. Empty
+        input returns empty input.
+    """
+    if not html:
+        return html
+
+    out: list[str] = []
+    index = 0
+    length = len(html)
+    while index < length:
+        if html[index] != "<":
+            out.append(html[index])
+            index += 1
+            continue
+
+        close = html.find(">", index)
+        if close < 0:
+            # Malformed tail; leave it exactly as found.
+            out.append(html[index:])
+            break
+
+        tag = _tag_name(html, index, close)
+        opening = not html.startswith("</", index)
+        if tag in _PRESERVE_INSIDE and opening:
+            # The boundary still has to be marked, or the preserved element ends
+            # up sharing a line with whatever closed before it.
+            if tag in _BLOCK_TAGS and _between(out):
+                out.append("\n")
+            # Copy the element whole, including whatever is inside it.
+            end = _matching_close(html, tag, close + 1)
+            stop = length if end is None else end
+            out.append(html[index:stop])
+            index = stop
+            continue
+
+        if tag in _BLOCK_TAGS and opening and _between(out):
+            # Only between two elements: the previous character being a tag
+            # closing is what guarantees the newline lands where HTML ignores it.
+            out.append("\n")
+        out.append(html[index : close + 1])
+        index = close + 1
+
+    return "".join(out)
+
+
+def _between(out: list[str]) -> bool:
+    """Whether a newline may be inserted here without changing the document.
+
+    Two conditions, and both matter. The last emitted token has to be a tag, or
+    the newline would be a rendered space in the middle of text. And the output
+    must not already end in a newline, or reformatting an already-formatted
+    document would insert a blank line before every block -- and since a saved
+    file is read back and written again on the next save, those blank lines would
+    accumulate.
+    """
+    for chunk in reversed(out):
+        if not chunk:
+            continue
+        if chunk.endswith("\n"):
+            return False
+        stripped = chunk.rstrip()
+        if not stripped:
+            continue
+        return stripped.endswith(">")
+    return False
+
+
+def _tag_name(html: str, start: int, close: int) -> str:
+    """The lowercase tag name of the tag starting at ``start``, or ``""``."""
+    match = re.match(r"</?\s*([A-Za-z][A-Za-z0-9]*)", html[start:close])
+    return match.group(1).lower() if match else ""
+
+
+def _matching_close(html: str, tag: str, from_index: int) -> int | None:
+    """Index just past the ``</tag>`` that closes an already-open ``tag``.
+
+    Returns ``None`` when the element is never closed, in which case the caller
+    copies the rest of the document -- the alternative would be to drop content.
+    """
+    pattern = re.compile(rf"</\s*{tag}\s*>", re.IGNORECASE)
+    match = pattern.search(html, from_index)
+    return match.end() if match else None

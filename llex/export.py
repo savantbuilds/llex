@@ -251,6 +251,14 @@ def write_md(document: Document, parsed: ParsedDocument) -> bytes:
 def _html_marks(style: InlineStyle) -> list[str]:
     """Map an inline style onto opening HTML tags, outermost first."""
     tags: list[str] = []
+    if style.scaffold is not None:
+        # Innermost, so it wraps the text rather than the formatting around it.
+        # A scaffold the reader can act on is content, and dropping it here is
+        # how a user's prompts would quietly disappear from an export.
+        tags.append(
+            f'span data-scaffold="{html_module.escape(style.scaffold.id, quote=True)}"'
+            f' data-instruction="{html_module.escape(style.scaffold.instruction, quote=True)}"'
+        )
     if style.code:
         tags.append("code")
     if style.bold:
