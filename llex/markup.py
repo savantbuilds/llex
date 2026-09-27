@@ -67,8 +67,10 @@ BLOCK_KINDS: Final = frozenset(
 #: Tags whose *content* is never document text.
 _SKIP_CONTENT: Final = frozenset({"script", "style", "head", "title", "noscript"})
 
+#: Tags with no closing tag and no content. ``hr`` is deliberately absent: it
+#: is a *block* that the writer wants as a real node, not a stray marker.
 _VOID_TAGS: Final = frozenset(
-    {"br", "hr", "img", "input", "meta", "link", "source", "wbr", "col", "area"}
+    {"br", "img", "input", "meta", "link", "source", "wbr", "col", "area"}
 )
 
 _HEADING_TAGS: Final = {f"h{level}": level for level in range(1, 7)}
@@ -272,11 +274,17 @@ def _style_from_tags(tag: str, declarations: dict[str, str]) -> InlineStyle:
 
 
 def _align_from(attrs: dict[str, str | None]) -> str | None:
-    """Resolve text alignment from ``text-align`` or the legacy ``align``."""
-    align = (attrs.get("text-align") or "").strip().lower()
-    if align not in _ALIGNMENTS:
-        align = (attrs.get("align") or "").strip().lower()
-    return align if align in _ALIGNMENTS else None
+    """Resolve text alignment from ``text-align``, the legacy ``align``
+    attribute, or an inline ``style`` declaration -- in that order."""
+    for candidate in (
+        attrs.get("text-align"),
+        attrs.get("align"),
+        _declarations(attrs.get("style")).get("text-align"),
+    ):
+        value = (candidate or "").strip().lower()
+        if value in _ALIGNMENTS:
+            return value
+    return None
 
 
 def _merge_style(base: InlineStyle, extra: InlineStyle) -> InlineStyle:
@@ -381,14 +389,22 @@ class _Frame:
             self.runs.append(TextRun(text=text, style=style))
 
     def to_block(self) -> Block | None:
-        """Materialise this frame, or return ``None`` if it holds nothing."""
-        if self.is_empty:
+        """Materialise this frame, or return ``None`` if it carries nothing.
+
+        A paragraph *synthesised* to capture stray text between two block
+        elements is dropped when it holds only whitespace, so pretty-printed
+        HTML does not gain an empty paragraph before every heading. An
+        explicit ``<p>   </p>`` is a deliberate empty paragraph in a word
+        processor, so it is always kept.
+        """
+        if self.implicit and not self.text.strip():
             return None
-        if self.implicit and self.text.strip() == "":
-            # A synthesised paragraph that captured only the whitespace between
-            # two real block elements is formatting noise, not content. An
-            # *explicit* whitespace-only ``<p>`` is a deliberate empty
-            # paragraph in a word processor, so it is always kept.
+        children = tuple(
+            child for block in map(_Frame.to_block, self.children) if (child := block)
+        )
+        if not self.runs and not children and self.spec.holds_blocks:
+            # A container that never received content. Leaf blocks are exempt:
+            # an empty `<p>`, `<h1>` or `<hr>` is meaningful content.
             return None
         kind = "page" if self.is_page else self.spec.kind
         if kind is None:  # pragma: no cover - defensive
@@ -396,9 +412,7 @@ class _Frame:
         return Block(
             kind=kind,
             runs=tuple(self.runs),
-            children=tuple(
-                child for block in map(_Frame.to_block, self.children) if (child := block)
-            ),
+            children=children,
             level=self.spec.heading_level,
             align=self.align,
             language=self.language,
@@ -523,11 +537,13 @@ class _DocumentBuilder(HTMLParser):
             self._close_top()
 
     def handle_startendtag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        """Handle ``<tag/>`` as an immediate open-then-close."""
         tag = tag.lower()
-        if tag in _VOID_TAGS or tag in _TAG_SPECS:
+        if tag in _SKIP_CONTENT:
+            return
+        if tag in _TAG_SPECS:
             self.handle_starttag(tag, attrs)
-            if tag not in _VOID_TAGS and tag in _TAG_SPECS:
-                self._close_top()
+            self.handle_endtag(tag)
             return
         self.handle_starttag(tag, attrs)
         self.handle_endtag(tag)
@@ -542,6 +558,9 @@ class _DocumentBuilder(HTMLParser):
                 self._skip_depth -= 1
             return
         if tag in _VOID_TAGS:
+            return
+        if tag == "hr":
+            # `<hr>` self-closes when it is opened, so there is nothing to pop.
             return
         if tag not in _TAG_SPECS:
             # Inline formatting element: commit its text under the style it
@@ -703,8 +722,9 @@ def to_plain_text(html: str) -> str:
 # --------------------------------------------------------------------------- #
 
 #: A word is a run of word characters, optionally joined by an internal
-#: apostrophe so ``don't`` counts once rather than twice.
-_WORD_RE: Final = re.compile(r"[^\W_]+(?:['\u2019][^\W_]+)*", re.UNICODE)
+#: apostrophe so ``don't`` counts once rather than twice. Underscores are word
+#: characters, matching how mainstream word processors count ``under_score``.
+_WORD_RE: Final = re.compile(r"\w+(?:['\u2019]\w+)*", re.UNICODE)
 
 
 def count_words(text: str) -> int:

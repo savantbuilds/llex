@@ -69,7 +69,14 @@ llex = [
 minversion = "8.0"
 testpaths = ["tests"]
 addopts = "-ra --strict-markers --strict-config"
-filterwarnings = ["error"]
+# Warnings are errors by default so a deprecation cannot slip through
+# unnoticed. The exceptions are all third-party notices we do not control.
+filterwarnings = [
+    "error",
+    # Starlette asks for `httpx2`; `httpx` is what TestClient actually uses.
+    "ignore:Using `httpx` with `starlette.testclient` is deprecated:DeprecationWarning",
+    "ignore:Using `httpx` with `starlette.testclient` is deprecated",
+]
 
 [tool.coverage.run]
 branch = true

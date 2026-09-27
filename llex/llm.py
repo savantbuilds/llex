@@ -44,6 +44,8 @@ from dataclasses import dataclass
 from typing import Any, Final, Protocol
 
 __all__ = [
+    "AssistantError",
+    "AssistantResponseError",
     "AssistantUnavailableError",
     "Engine",
     "HeuristicEngine",
@@ -67,8 +69,27 @@ _WHITESPACE_RE: Final = re.compile(r"\s+")
 _RETRY_ATTEMPTS: Final = 2
 
 
-class AssistantUnavailableError(RuntimeError):
-    """Raised when no assistant backend can produce a result."""
+class AssistantError(RuntimeError):
+    """Base class for assistant failures."""
+
+
+class AssistantUnavailableError(AssistantError):
+    """No backend could be reached, so a fallback may be attempted.
+
+    Raised for a transport problem: nothing is listening, the runner has not
+    finished loading, or the request timed out. :meth:`LocalLLMBridge.generate`
+    responds to this by falling back to the deterministic engine.
+    """
+
+
+class AssistantResponseError(AssistantError):
+    """A backend replied, but its reply could not be used.
+
+    Raised for an HTTP error status or a malformed payload. These are *not*
+    retried with heuristics: a wrong model name or a broken runner is a real
+    configuration problem, and silently substituting different output would
+    hide it from the user.
+    """
 
 
 class Tone:
@@ -84,13 +105,47 @@ class Tone:
 
 
 class Engine(Protocol):
-    """The contract any assistant backend must satisfy."""
+    """The contract any assistant backend must satisfy.
 
-    #: Human-readable backend identifier, surfaced in the UI.
-    name: str
+    This is the whole assistant surface the UI can reach. ``generate`` is the
+    primitive; the rest are the named operations the sidebar, the context menu
+    and the scaffold pipeline call. A backend that cannot genuinely perform a
+    task must raise :class:`AssistantUnavailableError` rather than return a
+    placeholder, so the UI can tell the user instead of inserting fiction into
+    their document.
+    """
+
+    @property
+    def name(self) -> str:
+        """Human-readable backend identifier, surfaced in the UI."""
+        ...
 
     def generate(self, task: str, source: str, *, instruction: str = "") -> str:
         """Return text for ``task`` given ``source``, or raise on failure."""
+        ...
+
+    def summarize(self, text: str, max_sentences: int = 3) -> str:
+        """Condense ``text``."""
+        ...
+
+    def rewrite_with_tone(self, text: str, tone: str) -> str:
+        """Rewrite ``text`` in the named ``tone``."""
+        ...
+
+    def outline(self, text: str) -> str:
+        """Produce an outline of ``text``."""
+        ...
+
+    def answer(self, question: str, context: str) -> str:
+        """Answer ``question`` about the document body ``context``."""
+        ...
+
+    def execute_instruction(self, text: str, instruction: str) -> str:
+        """Fulfil ``instruction`` for the selected fragment ``text``."""
+        ...
+
+    def describe(self) -> dict[str, Any]:
+        """Serialisable status for the assistant sidebar."""
         ...
 
 
@@ -252,25 +307,76 @@ def outline_from_text(text: str, max_items: int = 8) -> str:
 class HeuristicEngine:
     """Deterministic, dependency-free fallback engine.
 
-    Handles the extractive tasks well and reports the generative ones honestly
-    rather than pretending. Callers decide whether an honest "unavailable" is
-    better than the previous behaviour of echoing a bracket-wrapped fake.
+    Covers the extractive tasks well and *declines* the generative ones by
+    raising :class:`AssistantUnavailableError`. That is deliberate: the
+    alternative -- returning a plausible-looking string -- would let the
+    frontend insert invented prose into a user's document while implying a
+    language model had produced it.
     """
 
     name: Final = "heuristic"
 
     def generate(self, task: str, source: str, *, instruction: str = "") -> str:
         handlers = {
-            "summarize": lambda: extractive_summary(source) or "Nothing to summarize.",
-            "outline": lambda: outline_from_text(source) or "Add more text to outline.",
+            "summarize": lambda: extractive_summary(source),
+            "outline": lambda: outline_from_text(source),
         }
         handler = handlers.get(task)
         if handler is not None:
-            return handler()
+            return handler() or _EMPTY_RESULT[task]
         raise AssistantUnavailableError(
             f"'{task}' needs a local model; the offline engine only covers "
             f"summarize and outline. Set LLEX_LOCAL_MODEL to enable it."
         )
+
+    def summarize(self, text: str, max_sentences: int = 3) -> str:
+        if not text.strip():
+            return "Nothing to summarize."
+        return extractive_summary(text, max_sentences=max_sentences) or "Nothing to summarize."
+
+    def outline(self, text: str) -> str:
+        if not text.strip():
+            return "Add more text to outline."
+        return outline_from_text(text) or "Add more text to outline."
+
+    def rewrite_with_tone(self, text: str, tone: str) -> str:
+        if not text.strip():
+            return "Select text to rewrite."
+        raise AssistantUnavailableError(
+            "rewriting in a named tone needs a local model. "
+            "Set LLEX_LOCAL_MODEL to enable it."
+        )
+
+    def answer(self, question: str, context: str) -> str:
+        raise AssistantUnavailableError(
+            "answering questions needs a local model. "
+            "Set LLEX_LOCAL_MODEL to enable it."
+        )
+
+    def execute_instruction(self, text: str, instruction: str) -> str:
+        if not text.strip():
+            raise ValueError("scaffold instruction requires some selected text")
+        raise AssistantUnavailableError(
+            f"running the instruction {instruction.strip()!r} needs a local model. "
+            "Set LLEX_LOCAL_MODEL to enable it."
+        )
+
+    def describe(self) -> dict[str, Any]:
+        return {
+            "backend": self.name,
+            "endpoint": None,
+            "model": None,
+            "online": False,
+            "error": None,
+            "offline_capabilities": ["summarize", "outline"],
+        }
+
+
+#: What to return when an extractive task is handed empty input.
+_EMPTY_RESULT: Final = {
+    "summarize": "Nothing to summarize.",
+    "outline": "Add more text to outline.",
+}
 
 
 # --------------------------------------------------------------------------- #
@@ -347,6 +453,11 @@ class LocalLLMBridge:
     # -- Introspection ----------------------------------------------------- #
 
     @property
+    def name(self) -> str:
+        """Backend identifier, satisfying the :class:`Engine` contract."""
+        return self.backend
+
+    @property
     def is_online(self) -> bool:
         """True when a local endpoint is configured. Does not perform I/O."""
         return bool(self.endpoint)
@@ -371,10 +482,11 @@ class LocalLLMBridge:
     def generate(self, task: str, source: str, *, instruction: str = "") -> str:
         """Run ``task`` against the local model, or fall back when offline.
 
-        Falls back only on *transport* failure -- an offline machine, a stopped
-        runner, a timeout. A well-formed error response from the model is
-        surfaced, because retrying it with heuristics would hide a real problem
-        such as a wrong model name.
+        Only :class:`AssistantUnavailableError` triggers the fallback, because
+        it means the model could not be reached at all. A
+        :class:`AssistantResponseError` propagates: the backend answered and
+        the answer was unusable, which is a configuration problem the user needs
+        to see rather than have papered over.
         """
         if task not in _SYSTEM_PROMPTS:
             raise AssistantUnavailableError(f"unknown assistant task: {task!r}")
@@ -479,9 +591,10 @@ class LocalLLMBridge:
                 with urllib.request.urlopen(request, timeout=self.timeout) as response:  # noqa: S310
                     return _extract_message(response.read())
             except urllib.error.HTTPError as exc:
-                detail = _read_http_error(exc)
-                raise AssistantUnavailableError(
-                    f"local model returned HTTP {exc.code}: {detail}"
+                # The runner answered, so this is a real configuration problem
+                # (wrong path, wrong model) rather than an outage.
+                raise AssistantResponseError(
+                    f"local model returned HTTP {exc.code}: {_read_http_error(exc)}"
                 ) from exc
             except (urllib.error.URLError, TimeoutError, OSError) as exc:
                 last_transport_error = exc
@@ -537,25 +650,29 @@ def _extract_message(raw: bytes) -> str:
     try:
         payload = json.loads(raw)
     except (json.JSONDecodeError, UnicodeDecodeError) as exc:
-        raise AssistantUnavailableError(
+        raise AssistantResponseError(
             f"local model returned a non-JSON response: {raw[:200]!r}"
         ) from exc
 
     if not isinstance(payload, dict):
-        raise AssistantUnavailableError("local model returned an unexpected payload")
+        raise AssistantResponseError("local model returned an unexpected payload")
 
     if "error" in payload:
         error = payload["error"]
         detail = error.get("message") if isinstance(error, dict) else error
-        raise AssistantUnavailableError(f"local model error: {detail}")
+        raise AssistantResponseError(f"local model error: {detail}")
 
     choices = payload.get("choices")
-    if not isinstance(choices, list) or not choices:
-        raise AssistantUnavailableError("local model returned no choices")
+    if not isinstance(choices, list):
+        if "choices" in payload:
+            raise AssistantResponseError("local model returned a malformed payload: choices is not a list")
+        raise AssistantResponseError("local model returned no choices")
+    if not choices:
+        raise AssistantResponseError("local model returned no choices")
 
     first = choices[0]
     if not isinstance(first, dict):
-        raise AssistantUnavailableError("local model returned a malformed choice")
+        raise AssistantResponseError("local model returned a malformed choice")
 
     message = first.get("message")
     content = message.get("content") if isinstance(message, dict) else None
@@ -563,11 +680,11 @@ def _extract_message(raw: bytes) -> str:
         # Some runners expose a flat ``text`` field instead of ``message``.
         content = first.get("text")
     if not isinstance(content, str):
-        raise AssistantUnavailableError("local model returned no message content")
+        raise AssistantResponseError("local model returned no message content")
 
     stripped = content.strip()
     if not stripped:
-        raise AssistantUnavailableError("local model returned an empty response")
+        raise AssistantResponseError("local model returned an empty response")
     return stripped
 
 
