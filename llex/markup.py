@@ -330,12 +330,24 @@ _TAG_SPECS: Final[dict[str, _TagSpec]] = {
 class _Frame:
     """Mutable builder state for one open block element."""
 
-    __slots__ = ("align", "children", "is_page", "language", "runs", "spec", "tag")
+    __slots__ = (
+        "align",
+        "children",
+        "implicit",
+        "is_page",
+        "language",
+        "runs",
+        "spec",
+        "tag",
+    )
 
-    def __init__(self, spec: _TagSpec, tag: str, *, is_page: bool = False) -> None:
+    def __init__(self, spec: _TagSpec, tag: str, *, is_page: bool = False, implicit: bool = False) -> None:
         self.spec = spec
         self.tag = tag
         self.is_page = is_page
+        #: True when this paragraph was synthesised to hold stray text rather
+        #: than appearing in the source as an explicit ``<p>``.
+        self.implicit = implicit
         self.align: str | None = None
         self.language: str | None = None
         self.runs: list[TextRun] = []
@@ -353,6 +365,12 @@ class _Frame:
     def is_empty(self) -> bool:
         return not self.runs and not self.children
 
+    @property
+    def text(self) -> str:
+        if self.accepts_inline:
+            return "".join(run.text for run in self.runs)
+        return "".join(child.text for child in self.children)
+
     def add_text(self, text: str, style: InlineStyle) -> None:
         if not text:
             return
@@ -365,6 +383,12 @@ class _Frame:
     def to_block(self) -> Block | None:
         """Materialise this frame, or return ``None`` if it holds nothing."""
         if self.is_empty:
+            return None
+        if self.implicit and self.text.strip() == "":
+            # A synthesised paragraph that captured only the whitespace between
+            # two real block elements is formatting noise, not content. An
+            # *explicit* whitespace-only ``<p>`` is a deliberate empty
+            # paragraph in a word processor, so it is always kept.
             return None
         kind = "page" if self.is_page else self.spec.kind
         if kind is None:  # pragma: no cover - defensive
@@ -428,7 +452,7 @@ class _DocumentBuilder(HTMLParser):
             if frame.accepts_inline:
                 return frame
         parent = self._stack[-1] if self._stack and self._stack[-1].holds_blocks else None
-        implicit = _Frame(_TAG_SPECS["p"], "p")
+        implicit = _Frame(_TAG_SPECS["p"], "p", implicit=True)
         if parent is not None:
             parent.children.append(implicit)
         else:
@@ -468,6 +492,15 @@ class _DocumentBuilder(HTMLParser):
             # under the *outer* style before pushing this one, otherwise
             # ``a<strong>b</strong>`` would retroactively bold the ``a``.
             self._flush_inline()
+            if (
+                tag == "code"
+                and self._stack
+                and self._stack[-1].tag == "pre"
+                and self._stack[-1].language is None
+            ):
+                # TipTap and most highlighters put the language on the <code>
+                # inside <pre>, so pick it up from there.
+                self._stack[-1].language = attrs.get("class")
             self._styles.append(
                 _merge_style(
                     self._styles[-1],
@@ -654,13 +687,15 @@ def to_plain_text(html: str) -> str:
     """
     parsed = parse_document(html)
     lines = [line.rstrip() for line in _render_blocks(parsed.blocks)]
-    # Collapse runs of blank lines left by empty blocks, but keep intentional
-    # single blank lines between paragraphs.
+    # Keep a single blank line where the document had a deliberate empty
+    # paragraph, but never a run of them.
     collapsed: list[str] = []
     for line in lines:
         if line or (collapsed and collapsed[-1]):
             collapsed.append(line)
-    return "\n".join(collapsed).strip()
+    while collapsed and not collapsed[-1]:
+        collapsed.pop()
+    return "\n".join(collapsed)
 
 
 # --------------------------------------------------------------------------- #
