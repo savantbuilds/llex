@@ -3,18 +3,71 @@
  *
  * See `pagination.js` for why the decisions are separated from the DOM work.
  * This module owns only the parts that genuinely need a browser: measuring
- * pages, scheduling work, and applying transactions.
+ * pages, and applying the reflow transaction.
+ *
+ * ## Why a plugin, not an update handler
+ *
+ * The reflow is produced by a ProseMirror plugin's `appendTransaction` rather
+ * than by an `onUpdate` handler or an animation-frame loop. That is what makes
+ * undo behave. A reflow triggered by the user pressing Enter near a page
+ * boundary is *appended to* the transaction that inserted the break, so one
+ * undo removes both. Dispatched separately -- as the previous frame loop did --
+ * the page move landed on top of the undo stack and the first Ctrl+Z reverted
+ * the pagination instead of the typing.
+ *
+ * ProseMirror re-invokes `appendTransaction` for each appended transaction, so
+ * a cascade across many pages continues within the same dispatch and is grouped
+ * into the same history event. That is why only one measurement is taken per
+ * invocation: simulating further rounds here would measure a DOM that has not
+ * re-rendered, and would produce plans based on stale layout.
  */
 
-import {
-  applyReflow,
-  collapseToSinglePage,
-  measureOverflow,
-  planReflow,
-} from './pagination.js';
+import { Plugin, PluginKey } from '@tiptap/pm/state';
 
-/** Ceiling on reflow passes per burst, so a pathological document cannot spin. */
-const MAX_PASSES = 500;
+import { applyReflow, collapseToSinglePage, measureOverflow, planPage } from './pagination.js';
+
+/** Ceiling on reflow rounds, so a pathological document cannot spin. */
+export const MAX_ROUNDS = 200;
+
+export const paginationKey = new PluginKey('llex-pagination');
+
+/**
+ * Compute the transaction that reflows every currently-overflowing page.
+ *
+ * Pure with respect to the editor: it reads the DOM and returns a transaction,
+ * but dispatches nothing, so it is straightforward to reason about and to
+ * assert on.
+ *
+ * @param {import('@tiptap/pm/state').EditorState} state
+ * @param {Element} container Element whose direct children are the pages.
+ * @param {Set<number>} pinned Pages already allowed to grow.
+ * @returns {{transaction: import('@tiptap/pm/transform').Transaction, moved: number, grown: number[]} | null}
+ */
+export function reflowTransaction(state, container, pinned) {
+  const { overflowed, counts } = measureOverflow(container);
+  if (overflowed.size === 0) return null;
+
+  let transaction = null;
+  let moved = 0;
+  const grown = [];
+
+  for (const pageIndex of overflowed) {
+    const plan = planPage(state.doc, pageIndex, counts.get(pageIndex) || 0, pinned);
+    if (!plan) continue;
+    if (plan.kind === 'grow') {
+      grown.push(pageIndex);
+      continue;
+    }
+    const step = applyReflow(state, plan);
+    if (!step) continue;
+    transaction = transaction ? transaction.step(step) : step;
+    moved += 1;
+  }
+
+  if (grown.length > 0) return { transaction, moved, grown };
+  if (!transaction) return null;
+  return { transaction, moved, grown };
+}
 
 export class Paginator {
   /**
@@ -23,11 +76,13 @@ export class Paginator {
   constructor({ editor, onChange }) {
     this.editor = editor;
     this.onChange = onChange || (() => {});
-    /** Page indices allowed to grow, so they are not re-flagged every pass. */
+    /** Page indices allowed to grow, so they are not re-flagged every round. */
     this.pinned = new Set();
     this.frame = 0;
-    this.running = false;
+    this.rounds = 0;
+    this.suspended = false;
     this._tick = this._tick.bind(this);
+    this._registerPlugin();
   }
 
   /** The element that directly contains the page nodes. */
@@ -35,11 +90,68 @@ export class Paginator {
     return this.editor.view.dom;
   }
 
+  _registerPlugin() {
+    this.plugin = new Plugin({
+      key: paginationKey,
+      appendTransaction: (transactions, _oldState, newState) => {
+        if (this.suspended) return null;
+        if (!transactions.some((tr) => tr.docChanged)) return null;
+        return this.reflow(newState);
+      },
+      view: () => ({
+        // Re-measure for layout changes the document does not record, such as
+        // a window resize or a font finishing load.
+        update: (view) => {
+          if (this.pendingRelayout) this.relayout();
+          else this.schedule();
+          return true;
+        },
+      }),
+    });
+    this.editor.registerPlugin(this.plugin);
+  }
+
+  /** Suppress reflow while the paginator is restructuring the document itself. */
+  suspend(value) {
+    this.suspended = Boolean(value);
+  }
+
   /**
-   * Schedule a repagination pass on the next animation frame.
+   * One reflow round over the current layout.
    *
-   * Coalesced deliberately: typing fires an update per keystroke, and
-   * measuring layout for each one would make typing janky.
+   * @param {import('@tiptap/pm/state').EditorState} [state]
+   * @returns {import('@tiptap/pm/transform').Transaction|null}
+   */
+  reflow(state = this.editor.state) {
+    this.rounds += 1;
+    if (this.rounds > MAX_ROUNDS) {
+      // Refusing to spin silently would leave the document mis-paginated with
+      // no indication of why, which is the worst of the available outcomes.
+      console.warn(
+        `llex: pagination gave up after ${MAX_ROUNDS} rounds; the layout may be wrong`,
+      );
+      this.rounds = 0;
+      return null;
+    }
+
+    const result = reflowTransaction(state, this.container, this.pinned);
+    if (!result) {
+      this.rounds = 0;
+      return null;
+    }
+
+    for (const pageIndex of result.grown) this.markOverfull(pageIndex);
+    if (result.moved > 0) this.onChange();
+    return result.transaction;
+  }
+
+  /**
+   * Schedule a repagination on the next animation frame.
+   *
+   * Coalesced deliberately: typing fires an update per keystroke, and measuring
+   * layout for each one would make typing janky. Edits are already reflowed
+   * inline by the plugin; this is only for changes the document does not
+   * record.
    */
   schedule() {
     if (this.frame) return;
@@ -56,69 +168,14 @@ export class Paginator {
 
   _tick() {
     this.frame = 0;
-    this.run();
+    this.apply();
   }
 
-  /**
-   * Run reflow passes until the layout settles.
-   *
-   * @returns {{passes: number, moved: number, settled: boolean}}
-   */
-  run() {
-    const { editor } = this;
-    if (this.running) return { passes: 0, moved: 0, settled: true };
-    this.running = true;
-    this.pinned.clear();
-
-    let passes = 0;
-    let moved = 0;
-    let settled = false;
-
-    try {
-      for (; passes < MAX_PASSES; passes += 1) {
-        // Reading scrollHeight forces layout, so the DOM is read once per pass
-        // and never interleaved with writes inside the loop body.
-        const overflowed = measureOverflow(this.container);
-        if (overflowed.size === 0) {
-          settled = true;
-          break;
-        }
-
-        const plan = planReflow(editor.state.doc, overflowed, this.pinned);
-        if (!plan) {
-          // Everything still overflowing is already pinned as overfull.
-          settled = true;
-          break;
-        }
-
-        if (plan.kind === 'grow') {
-          this._markOverfull(plan.pageIndex);
-          continue;
-        }
-
-        const changed = applyReflow(editor.state, plan);
-        if (!changed) {
-          // The plan no longer applies; stop rather than spin.
-          settled = true;
-          break;
-        }
-        editor.view.dispatch(changed);
-        moved += 1;
-      }
-    } finally {
-      this.running = false;
-    }
-
-    if (moved >= MAX_PASSES) {
-      // Refusing to spin silently would leave the document mis-paginated with
-      // no indication of why, which is the worst of the available outcomes.
-      console.warn(
-        `llex: pagination gave up after ${MAX_PASSES} passes; the layout may be wrong`,
-      );
-    }
-
-    if (moved > 0) this.onChange();
-    return { passes, moved, settled };
+  /** Run a reflow and dispatch it, for layout-driven rather than edit-driven work. */
+  apply() {
+    this.rounds = 0;
+    const transaction = this.reflow();
+    if (transaction) this.editor.view.dispatch(transaction);
   }
 
   /**
@@ -127,10 +184,10 @@ export class Paginator {
    * Without this the page is `overflow: hidden` and the text is neither
    * readable nor selectable -- invisible data loss.
    */
-  _markOverfull(pageIndex) {
+  markOverfull(pageIndex) {
     this.pinned.add(pageIndex);
     const page = this.container.children[pageIndex];
-    if (page) page.dataset.overfull = 'true';
+    if (page && page.dataset.overfull !== 'true') page.dataset.overfull = 'true';
   }
 
   /**
@@ -142,15 +199,22 @@ export class Paginator {
    */
   relayout() {
     const { editor } = this;
+    this.pendingRelayout = false;
     const collapsed = collapseToSinglePage(editor.state.doc);
-    if (!collapsed) return false;
-
-    editor.view.dispatch(editor.state.tr.replaceWith(0, editor.state.doc.content.size, collapsed));
+    if (collapsed) {
+      // Suspending stops the plugin reflowing the collapsed intermediate state,
+      // which is one enormous page by definition.
+      this.suspend(true);
+      try {
+        editor.view.dispatch(editor.state.tr.replaceWith(0, editor.state.doc.content.size, collapsed));
+      } finally {
+        this.suspend(false);
+      }
+    }
     this.pinned.clear();
-    this.container.querySelectorAll('[data-overfull]').forEach((page) => {
+    Array.prototype.forEach.call(this.container.querySelectorAll('[data-overfull]'), (page) => {
       delete page.dataset.overfull;
     });
-    this.run();
-    return true;
+    this.apply();
   }
 }

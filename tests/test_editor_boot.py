@@ -124,7 +124,7 @@ window.AbortController = AbortController;
     zoomLabel: text('zoom-level'),
     exportItems: window.document.querySelectorAll('#export-menu .dropdown-item').length,
     paginatorInfo: window.llex && window.llex.paginator ? { containerClass: window.llex.paginator.container ? window.llex.paginator.container.className : null, childCount: window.llex.paginator.container ? window.llex.paginator.container.children.length : -1, hasNumberPages: typeof window.llex.paginator.numberPages } : null,
-    pageNumbers: Array.from(window.document.querySelectorAll('#editor .page')).map(
+  pageNumbers: Array.from(window.document.querySelectorAll('#editor .page')).map(
       (page) => page.getAttribute('data-page-number') || ''
     ),
     rootFontSize: window.document.documentElement.style.fontSize || '',
@@ -145,6 +145,50 @@ window.AbortController = AbortController;
       errors.push('introspection: ' + e.message);
     }
   }
+
+  // Run last: this mutates the document, so everything above has to observe
+  // the state as loaded.
+  result.undoCheck = (function () {
+    if (!window.llex || !window.llex.editor) return { skipped: true };
+    var ed = window.llex.editor;
+    var out = {};
+
+    out.hasPaginationKey = ed.state.plugins.some(function (plugin) {
+      try { return plugin.key === 'llex-pagination$'; } catch (e) { return false; }
+    });
+
+    // jsdom has no layout, so pages are stubbed to overflow. Enough blocks are
+    // added for a split to be possible at all: with only two, the paginator
+    // correctly grows the page instead of moving anything.
+    ed.commands.insertContentAt(
+      1,
+      Array.from({ length: 6 }, function (_, i) { return '<p>filler ' + i + '</p>'; }).join('')
+    );
+
+    Object.defineProperty(window.Element.prototype, 'scrollHeight', {
+      configurable: true, get() { return 400; },
+    });
+    Object.defineProperty(window.Element.prototype, 'clientHeight', {
+      configurable: true, get() { return 300; },
+    });
+    Array.prototype.forEach.call(ed.view.dom.children, function (page) {
+      Array.prototype.forEach.call(page.children, function (child, i) {
+        child.getBoundingClientRect = function () {
+          return { top: i * 100, bottom: i * 100 + 100 };
+        };
+      });
+    });
+
+    // An edit that lands on a page boundary, so pagination has work to do.
+    var pagesBefore = ed.state.doc.childCount;
+    ed.commands.insertContentAt(1, '<p>typed by the test</p>');
+    out.paginationHappened = ed.state.doc.childCount > pagesBefore;
+
+    // One undo must take both the typing and the pagination it caused.
+    ed.commands.undo();
+    out.undoRemovedText = ed.getHTML().indexOf('typed by the test') === -1;
+    return out;
+  })();
 
   process.stdout.write('__RESULT__' + JSON.stringify(result));
 })().catch((e) => {
@@ -324,6 +368,40 @@ class TestTokenHandshake:
         """The token belongs in a header, never in a query string."""
         for call in boot_result.get("calls") or []:
             assert "token=" not in str(call["url"])
+
+
+class TestUndoAndPagination:
+    """A reflow must be part of the undo step that caused it.
+
+    The paginator used to run from an animation-frame loop, dispatching the page
+    move as its own transaction. That put the move on top of the undo stack, so
+    the first Ctrl+Z after typing near a page boundary reverted the pagination
+    and left the typing in place. It is now produced by a plugin's
+    `appendTransaction`, which groups it with the edit.
+    """
+
+    def test_pagination_runs_from_a_plugin(self, boot_result: dict[str, object]) -> None:
+        undo = dict(boot_result.get("undoCheck") or {})
+        assert undo.get("skipped") is not True, "the editor did not boot"
+        assert undo.get("hasPaginationKey") is True
+
+    def test_one_undo_removes_the_text_the_user_typed(self, boot_result: dict[str, object]) -> None:
+        undo = dict(boot_result.get("undoCheck") or {})
+        assert undo.get("paginationHappened") is True, "the probe forced a reflow"
+        assert undo.get("undoRemovedText") is True
+
+    def test_the_boot_is_still_error_free_with_pagination_active(
+        self, boot_result: dict[str, object]
+    ) -> None:
+        assert boot_result.get("errors") == []
+
+    def test_the_paginator_exposes_no_removed_api(self) -> None:
+        """`run()` was replaced by `apply()`; a stale call site would throw."""
+        source = (Path(__file__).resolve().parent.parent / "llex" / "static" / "js" / "main.js").read_text(
+            encoding="utf-8"
+        )
+        assert "paginator.run()" not in source
+        assert "paginator.apply()" in source
 
 
 class TestChrome:

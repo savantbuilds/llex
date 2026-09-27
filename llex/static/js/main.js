@@ -279,7 +279,7 @@ async function boot() {
         return;
       }
       executeButton.disabled = true;
-      executeButton.textContent = 'RunningÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¦';
+      executeButton.textContent = 'RunningÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¦';
       try {
         const { total, applied, failures } = await runScaffolds(editor, {
           run: (scaffolds) => api.runScaffolds(scaffolds),
@@ -328,7 +328,7 @@ async function boot() {
       toggleAssistant: () => togglePanel('sidebar', 'btn-toggle-sidebar'),
       onZoom: () => {
         paginator.schedule();
-        window.setTimeout(() => paginator.run(), 150);
+        window.setTimeout(() => paginator.apply(), 150);
       },
     },
   });
@@ -344,7 +344,7 @@ async function boot() {
   let resizeTimer = 0;
   window.addEventListener('resize', () => {
     clearTimeout(resizeTimer);
-    resizeTimer = window.setTimeout(() => paginator.run(), 200);
+    resizeTimer = window.setTimeout(() => paginator.apply(), 200);
   });
 
   // -- Go ----------------------------------------------------------------- //
@@ -357,9 +357,9 @@ async function boot() {
   // Page height depends on font metrics, so a fallback font would produce a
   // wrong first layout. Re-measure once the real fonts are in.
   if (document.fonts && document.fonts.ready) {
-    document.fonts.ready.then(() => paginator.run()).catch(() => paginator.run());
+    document.fonts.ready.then(() => paginator.apply()).catch(() => paginator.apply());
   }
-  window.setTimeout(() => paginator.run(), 400);
+  window.setTimeout(() => paginator.apply(), 400);
 
   // Exposed deliberately, for debugging from the webview console.
   window.llex = { editor, paginator, api, menus, settings, files, assistant, contextMenu, state };

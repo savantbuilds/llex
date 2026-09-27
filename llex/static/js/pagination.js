@@ -21,10 +21,11 @@
  *    it. Here such a page is marked as overfull and allowed to grow instead,
  *    so the content stays visible and the next block continues on a fresh page.
  *
- * The decision-making is separated from the DOM work: {@link planReflow} is a
- * pure function of the document and the measured overflow, which is what makes
- * the positioning arithmetic testable without a browser. Getting those offsets
- * wrong silently corrupts a document, so it is worth testing directly.
+ * The decision-making is separated from the DOM work, and the whole reflow for
+ * a document is computed in one pass rather than one block per frame. Getting
+ * the document positions wrong does not throw, it silently corrupts a
+ * document, so the arithmetic is derived from first principles in one place and
+ * checked against real ProseMirror documents in the test suite.
  */
 
 /**
@@ -34,34 +35,37 @@
  * @property {number} nodeSize       Size of the page node in the document.
  * @property {number} childCount     Number of blocks inside the page.
  * @property {number} contentStart   Position of the page's first child.
+ * @property {number} contentSize    Total size of the page's children.
  * @property {number} lastChildStart Position of the page's last child, or -1.
  * @property {number} lastChildSize  Size of the last child, or 0.
+ * @property {number[]} childSizes   Size of each child, in document order.
  */
 
 /**
  * @typedef {object} ReflowPlan
  * @property {'move'|'grow'} kind
- *   `move` shifts a block to the next page; `grow` lets an overfull single-block
+ *   `move` shifts a range of blocks to the next page; `grow` lets an overfull
  *   page expand so its content stays reachable.
  * @property {number} pageIndex Index of the page the plan applies to.
  * @property {number} [from]     Start of the range to move. `move` only.
  * @property {number} [to]       End of the range to move. `move` only.
- * @property {number} [targetIndex] Index the block moves to. `move` only.
+ * @property {number} [count]    How many trailing blocks move. `move` only.
+ * @property {number} [targetIndex] Index the blocks move to. `move` only.
  */
 
 /** Tolerance for the scrollHeight/clientHeight comparison, in CSS pixels. */
 export const OVERFLOW_TOLERANCE = 1;
 
 /** Below this many blocks a page cannot usefully be split. */
-const MIN_SPLITTABLE_CHILDREN = 2;
+export const MIN_SPLITTABLE_CHILDREN = 2;
 
 /**
  * Describe every page in `doc`, with the document positions needed to move
  * blocks between them.
  *
  * ProseMirror node positions are easy to get subtly wrong, so the arithmetic
- * is done once, here, from first principles rather than accumulated at each
- * call site. For a node at position `pos`:
+ * is done once, here, rather than accumulated at each call site. For a node at
+ * position `pos`:
  *
  *   - its content starts at `pos + 1`, skipping the opening token;
  *   - its content is `nodeSize - 2` long, the difference being the opening and
@@ -83,14 +87,18 @@ export function describePages(doc) {
     const lastChild = page.lastChild;
     const lastChildSize = lastChild ? lastChild.nodeSize : 0;
     const contentSize = page.nodeSize - 2;
+    const childSizes = [];
+    page.forEach((child) => childSizes.push(child.nodeSize));
     pages.push({
       index,
       pos,
       nodeSize: page.nodeSize,
       childCount: page.childCount,
       contentStart: pos + 1,
+      contentSize,
       lastChildStart: lastChild ? pos + 1 + contentSize - lastChildSize : -1,
       lastChildSize,
+      childSizes,
     });
     // The next sibling begins immediately after this node's closing token.
     pos += page.nodeSize;
@@ -99,49 +107,93 @@ export function describePages(doc) {
 }
 
 /**
- * Decide the single next reflow action, or `null` when the layout is settled.
+ * How many trailing blocks must leave a page for the remainder to fit.
  *
- * Only one block moves per call. Moving everything at once produced a
- * structurally invalid intermediate document on pages holding many blocks, and
- * measuring one move per frame is what produces the progressive "ripple" the
- * editor is known for.
- *
- * @param {import('@tiptap/pm/model').Node} doc
- * @param {ReadonlySet<number>} overflowed Page indices whose content is taller
- *   than the printable area, from measurement.
- * @param {ReadonlySet<number>} pinned Page indices already allowed to grow, so
- *   an overfull page is not re-marked on every subsequent pass.
- * @returns {ReflowPlan|null}
+ * @param {{height: number}[]} blocks Measured heights, in document order.
+ * @param {number} available Printable height in CSS pixels.
+ * @param {number} gap Space between blocks that also has to be accounted for.
+ * @returns {number} How many trailing blocks must move. 0 means it either
+ *   already fits, or cannot be split without orphaning a block -- in which case
+ *   the caller grows the page instead.
  */
-export function planReflow(doc, overflowed, pinned = new Set()) {
-  if (overflowed.size === 0) return null;
+export function countOverflowingTail(blocks, available, gap = 0) {
+  // Accumulate from the front: what matters is whether the blocks that stay
+  // fit, so measuring the kept run is the direct question. Accumulating from
+  // the end has to reason about the gap on the wrong side of the boundary.
+  let height = 0;
+  for (let index = 0; index < blocks.length; index += 1) {
+    if (index > 0) height += gap;
+    height += blocks[index].height;
+    if (height <= available) continue;
 
-  for (const pageIndex of overflowed) {
-    if (pinned.has(pageIndex)) continue;
-    const page = describePages(doc)[pageIndex];
-    if (!page) continue;
-
-    if (page.childCount < MIN_SPLITTABLE_CHILDREN) {
-      // A single block that cannot fit a page. Growing is the only option that
-      // keeps the text visible; moving it would just repeat the problem.
-      return { kind: 'grow', pageIndex };
+    const keep = index;
+    if (keep < MIN_SPLITTABLE_CHILDREN) {
+      // Too few blocks would remain, and a single block that cannot fit is not
+      // something moving can fix. The page is grown instead.
+      return 0;
     }
-    return {
-      kind: 'move',
-      pageIndex,
-      from: page.lastChildStart,
-      to: page.lastChildStart + page.lastChildSize,
-      targetIndex: pageIndex + 1,
-    };
+    return blocks.length - keep;
   }
-  return null;
+  return 0;
 }
 
 /**
- * Build the transaction that applies a {@link ReflowPlan}.
+ * Decide how a single overflowing page should be split.
  *
- * Returns `null` when the plan no longer applies -- a stale page index, a page
- * with nothing to move -- so the caller can stop rather than spin.
+ * @param {import('@tiptap/pm/model').Node} doc
+ * @param {number} pageIndex
+ * @param {number} overflowCount How many trailing blocks must move, from
+ *   {@link countOverflowingTail}.
+ * @param {ReadonlySet<number>} pinned Pages already allowed to grow.
+ * @returns {ReflowPlan|null}
+ */
+export function planPage(doc, pageIndex, overflowCount, pinned) {
+  if (overflowCount <= 0) return null;
+  if (pinned.has(pageIndex)) return null;
+
+  const page = describePages(doc)[pageIndex];
+  if (!page) return null;
+
+  if (page.childCount - overflowCount < MIN_SPLITTABLE_CHILDREN) {
+    // Whatever would remain is a single block. Growing is the only option that
+    // keeps the text visible; moving it would just repeat the problem.
+    return { kind: 'grow', pageIndex };
+  }
+
+  const to = page.lastChildStart + page.lastChildSize;
+  return {
+    kind: 'move',
+    pageIndex,
+    from: startOfTrailingRun(page, overflowCount),
+    to,
+    count: overflowCount,
+    targetIndex: pageIndex + 1,
+  };
+}
+
+/**
+ * Document position of the block that begins the last `count` blocks of a page.
+ *
+ * Walks the child sizes from the start rather than backwards from the last
+ * child, because only the total content size and the last child's size are
+ * otherwise available, and that is not enough to locate the boundary when more
+ * than one block moves.
+ *
+ * @param {PageInfo} page
+ * @param {number} count
+ * @returns {number}
+ */
+export function startOfTrailingRun(page, count) {
+  const keep = Math.max(0, page.childCount - count);
+  let offset = 0;
+  for (let index = 0; index < keep; index += 1) {
+    offset += page.childSizes[index] ?? 0;
+  }
+  return page.contentStart + offset;
+}
+
+/**
+ * Apply a {@link ReflowPlan} to a document, as a single transaction.
  *
  * Positions are re-derived from `state` rather than trusted from the plan,
  * because a plan computed before an intervening edit would slice the wrong
@@ -158,20 +210,20 @@ export function applyReflow(state, plan) {
   const source = pages[plan.pageIndex];
   if (!source || source.lastChildStart < 0) return null;
 
-  const from = source.lastChildStart;
-  const to = from + source.lastChildSize;
-  if (from < 0 || to > state.doc.content.size) return null;
+  const to = source.lastChildStart + source.lastChildSize;
+  const from = plan.from === undefined ? source.lastChildStart : plan.from;
+  if (from < source.contentStart || to > state.doc.content.size) return null;
 
   const tr = state.tr;
   const slice = tr.doc.slice(from, to);
   if (slice.content.size === 0) return null;
 
   if (plan.targetIndex < state.doc.childCount) {
-    // The next page already exists: prepend the block to it.
+    // The next page already exists: prepend the blocks to it.
     const target = pages[plan.targetIndex];
     tr.insert(target.contentStart, slice.content);
   } else {
-    // No page after this one, so start a new one holding the moved block.
+    // No page after this one, so start a new one holding the moved blocks.
     const pageType = state.schema.nodes.page;
     if (!pageType) return null;
     tr.insert(source.pos + source.nodeSize, pageType.create(null, slice.content));
@@ -235,23 +287,96 @@ export function stripPageWrappers(html) {
   return doc.body.innerHTML;
 }
 
+// --------------------------------------------------------------------------
+// Measurement
+// --------------------------------------------------------------------------
+
 /**
- * Measure which pages overflow their printable area.
+ * The printable height inside a page, in CSS pixels.
  *
- * Uses the page's scrollable content box rather than the outer element, so
+ * Read from the page's own box rather than recomputed from the geometry
+ * constants, so a change to margins or paper size is picked up automatically.
+ *
+ * @param {Element} page
+ * @returns {number}
+ */
+export function printableHeight(page) {
+  const style = page.ownerDocument.defaultView.getComputedStyle(page);
+  const paddingTop = Number.parseFloat(style.paddingTop) || 0;
+  const paddingBottom = Number.parseFloat(style.paddingBottom) || 0;
+  return page.clientHeight - paddingTop - paddingBottom;
+}
+
+/**
+ * Measure each direct child of a page, in document order.
+ *
+ * `offsetTop` is relative to the offset parent, which for a page is the page
+ * itself once it is positioned -- and it is, so the values are directly
+ * comparable to the printable height.
+ *
+ * @param {Element} page
+ * @returns {{height: number}[]}
+ */
+export function measureBlocks(page) {
+  const base = page.getBoundingClientRect ? page.getBoundingClientRect().top : 0;
+  return Array.prototype.map.call(page.children, (child) => {
+    const top =
+      typeof child.getBoundingClientRect === 'function'
+        ? child.getBoundingClientRect().top
+        : base + child.offsetTop;
+    const bottom =
+      typeof child.getBoundingClientRect === 'function'
+        ? child.getBoundingClientRect().bottom
+        : base + child.offsetTop + child.offsetHeight;
+    return { height: Math.max(0, bottom - top) };
+  });
+}
+
+/**
+ * The gap between consecutive blocks on a page, in CSS pixels.
+ *
+ * Taken from the first gap actually rendered rather than assumed, so a change
+ * to the page's `gap` does not have to be mirrored here.
+ *
+ * @param {Element} page
+ * @returns {number}
+ */
+export function measureGap(page) {
+  const children = page.children;
+  if (children.length < 2) return 0;
+  const first = children[0].getBoundingClientRect
+    ? children[0].getBoundingClientRect()
+    : { bottom: 0 };
+  const second = children[1].getBoundingClientRect
+    ? children[1].getBoundingClientRect()
+    : { top: 0 };
+  return Math.max(0, second.top - first.bottom);
+}
+
+/**
+ * Measure which pages overflow, and by how much they should shed.
+ *
+ * Uses each page's own scrollable box rather than the outer element, so
  * padding and margins cannot be mistaken for overflow.
  *
  * @param {Element} container Element whose direct children are the pages.
- * @returns {Set<number>} Indices of pages that overflow.
+ * @returns {{overflowed: Set<number>, counts: Map<number, number>}}
  */
 export function measureOverflow(container) {
+  /** @type {Set<number>} */
   const overflowed = new Set();
-  const pages = Array.from(container.children);
+  /** @type {Map<number, number>} */
+  const counts = new Map();
+  const pages = Array.prototype.slice.call(container.children);
+
   pages.forEach((page, index) => {
     if (page.dataset.overfull === 'true') return;
-    if (page.scrollHeight > page.clientHeight + OVERFLOW_TOLERANCE) {
-      overflowed.add(index);
-    }
+    if (page.scrollHeight <= page.clientHeight + OVERFLOW_TOLERANCE) return;
+
+    overflowed.add(index);
+    const available = printableHeight(page);
+    counts.set(index, countOverflowingTail(measureBlocks(page), available, measureGap(page)));
   });
-  return overflowed;
+
+  return { overflowed, counts };
 }

@@ -15,11 +15,14 @@ import { Schema } from '@tiptap/pm/model';
 import { EditorState } from '@tiptap/pm/state';
 
 import {
+  MIN_SPLITTABLE_CHILDREN,
   OVERFLOW_TOLERANCE,
   applyReflow,
   collapseToSinglePage,
+  countOverflowingTail,
   describePages,
-  planReflow,
+  planPage,
+  startOfTrailingRun,
 } from '../../llex/static/js/pagination.js';
 
 /** The minimal schema the pagination engine operates on. */
@@ -28,7 +31,11 @@ const schema = new Schema({
     doc: { content: 'page+' },
     page: { content: 'block+', group: 'page' },
     paragraph: { content: 'inline*', group: 'block' },
-    heading: { content: 'inline*', group: 'block' },
+    heading: {
+      content: 'inline*',
+      group: 'block',
+      attrs: { level: { default: 1 }, keepWithNext: { default: true } },
+    },
     text: { group: 'inline' },
   },
   marks: {
@@ -105,9 +112,9 @@ test('page positions accumulate from previous node sizes', () => {
 
 test('contentStart is one past the page position', () => {
   const doc = buildDoc([['a'], ['b']]);
-  const [first, second] = describePages(doc);
-  assert.equal(first.contentStart, first.pos + 1);
-  assert.equal(second.contentStart, second.pos + 1);
+  for (const page of describePages(doc)) {
+    assert.equal(page.contentStart, page.pos + 1);
+  }
 });
 
 test('lastChildStart points exactly at the last block', () => {
@@ -115,7 +122,7 @@ test('lastChildStart points exactly at the last block', () => {
   const [page] = describePages(doc);
   // The block a position resolves to must be the block we intend to move.
   assert.equal(doc.resolve(page.lastChildStart).parent.lastChild.textContent, 'three');
-  assert.equal(doc.resolve(page.lastChildStart).parent.content.size, page.nodeSize - 2);
+  assert.equal(doc.resolve(page.lastChildStart).parent.content.size, page.contentSize);
 });
 
 test('the slice at lastChildStart covers exactly the last block', () => {
@@ -142,51 +149,118 @@ test('every page of a longer document reports a resolvable last child', () => {
   }
 });
 
-test('a page holding a single textless block still reports a position', () => {
-  const doc = buildDoc([['']]);
+test('childSizes sum to the content size', () => {
+  const doc = buildDoc([['a', 'bb', 'ccc']]);
   const [page] = describePages(doc);
-  assert.equal(page.childCount, 1);
-  assert.ok(page.lastChildStart >= 0);
-  assert.equal(page.lastChildSize, 2);
+  const total = page.childSizes.reduce((sum, size) => sum + size, 0);
+  assert.equal(total, page.contentSize);
+  assert.equal(page.childSizes.length, page.childCount);
 });
 
 // --------------------------------------------------------------------------
-// planReflow
+// startOfTrailingRun
 // --------------------------------------------------------------------------
 
-test('planReflow does nothing when nothing overflows', () => {
-  assert.equal(planReflow(buildDoc([['a']]), new Set()), null);
+test('startOfTrailingRun locates the last block', () => {
+  const doc = buildDoc([['a', 'b', 'c', 'd']]);
+  const [page] = describePages(doc);
+  assert.equal(startOfTrailingRun(page, 1), page.lastChildStart);
 });
 
-test('planReflow moves the last block when a page overflows', () => {
+test('startOfTrailingRun locates the boundary when several blocks move', () => {
+  const doc = buildDoc([['a', 'b', 'c', 'd', 'e']]);
+  const [page] = describePages(doc);
+  const from = startOfTrailingRun(page, 2);
+  // The block that begins the run must be the third from the end.
+  const blocks = blocksOf(doc, 0);
+  assert.equal(blocks.length, 5);
+  assert.equal(doc.resolve(from).parent.child(2).textContent, 'c');
+});
+
+test('startOfTrailingRun of the whole page is the content start', () => {
   const doc = buildDoc([['a', 'b', 'c']]);
-  const plan = planReflow(doc, new Set([0]));
+  const [page] = describePages(doc);
+  assert.equal(startOfTrailingRun(page, page.childCount), page.contentStart);
+});
+
+// --------------------------------------------------------------------------
+// countOverflowingTail
+// --------------------------------------------------------------------------
+
+test('countOverflowingTail reports nothing when it already fits', () => {
+  const blocks = [{ height: 10 }, { height: 10 }, { height: 10 }];
+  assert.equal(countOverflowingTail(blocks, 1000, 0), 0);
+});
+
+test('countOverflowingTail moves only what must move', () => {
+  // 100 printable; 10+10+900 => the 900 block alone overflows.
+  const blocks = [{ height: 10 }, { height: 10 }, { height: 900 }];
+  assert.equal(countOverflowingTail(blocks, 100, 0), 1);
+});
+
+test('countOverflowingTail accounts for the gap between blocks', () => {
+  const blocks = [{ height: 40 }, { height: 40 }, { height: 40 }];
+  // 80 printable, no gap: two blocks need exactly 80, so one moves.
+  assert.equal(countOverflowingTail(blocks, 80, 0), 1);
+  // With a 10px gap the same two blocks need 90, so only one fits and the
+  // page must be grown rather than split.
+  assert.equal(countOverflowingTail(blocks, 80, 10), 0);
+  // Give it room for two and the split becomes possible again.
+  assert.equal(countOverflowingTail(blocks, 95, 10), 1);
+});
+
+test('countOverflowingTail refuses to split a two-block page', () => {
+  // A page with a single remaining block would clip it, so it is grown instead.
+  assert.equal(countOverflowingTail([{ height: 500 }, { height: 500 }], 100, 0), 0);
+});
+
+test('countOverflowingTail handles an empty page', () => {
+  assert.equal(countOverflowingTail([], 100, 0), 0);
+});
+
+test('MIN_SPLITTABLE_CHILDREN is two', () => {
+  assert.equal(MIN_SPLITTABLE_CHILDREN, 2);
+});
+
+// --------------------------------------------------------------------------
+// planPage
+// --------------------------------------------------------------------------
+
+test('planPage does nothing when nothing must move', () => {
+  assert.equal(planPage(buildDoc([['a', 'b']]), 0, 0, new Set()), null);
+});
+
+test('planPage moves the measured number of trailing blocks', () => {
+  const doc = buildDoc([['a', 'b', 'c']]);
+  const plan = planPage(doc, 0, 1, new Set());
   assert.equal(plan.kind, 'move');
   assert.equal(plan.pageIndex, 0);
+  assert.equal(plan.count, 1);
   assert.equal(plan.targetIndex, 1);
-  assert.equal(doc.resolve(plan.from).parent.lastChild.textContent, 'c');
+  assert.equal(doc.resolve(plan.from).parent.child(2).textContent, 'c');
 });
 
-test('planReflow grows a page holding a single oversized block', () => {
-  // Clipping this would make the text unreadable and unselectable.
-  const plan = planReflow(buildDoc([['enormous']]), new Set([0]));
-  assert.equal(plan.kind, 'grow');
-  assert.equal(plan.pageIndex, 0);
-});
-
-test('planReflow skips pages already pinned as overfull', () => {
-  const doc = buildDoc([['huge'], ['a', 'b']]);
-  const plan = planReflow(doc, new Set([0, 1]), new Set([0]));
+test('planPage can move several blocks at once', () => {
+  const doc = buildDoc([['a', 'b', 'c', 'd']]);
+  const plan = planPage(doc, 0, 2, new Set());
   assert.equal(plan.kind, 'move');
-  assert.equal(plan.pageIndex, 1);
+  assert.equal(plan.count, 2);
+  assert.equal(doc.resolve(plan.from).parent.child(1).textContent, 'b');
 });
 
-test('planReflow returns null once every overflow is pinned', () => {
-  assert.equal(planReflow(buildDoc([['huge']]), new Set([0]), new Set([0])), null);
+test('planPage grows rather than leaving a single block', () => {
+  const doc = buildDoc([['a', 'b']]);
+  // Moving one would leave a single block, which could not fit anyway.
+  const plan = planPage(doc, 0, 1, new Set());
+  assert.equal(plan.kind, 'grow');
 });
 
-test('planReflow ignores an out-of-range page index', () => {
-  assert.equal(planReflow(buildDoc([['a']]), new Set([7])), null);
+test('planPage skips a pinned page', () => {
+  assert.equal(planPage(buildDoc([['a', 'b', 'c']]), 0, 1, new Set([0])), null);
+});
+
+test('planPage ignores an out-of-range page index', () => {
+  assert.equal(planPage(buildDoc([['a', 'b']]), 7, 1, new Set()), null);
 });
 
 // --------------------------------------------------------------------------
@@ -195,7 +269,7 @@ test('planReflow ignores an out-of-range page index', () => {
 
 test('applyReflow moves a block onto the next existing page', () => {
   let state = buildState(buildDoc([['a', 'b', 'c'], ['tail']]));
-  const plan = planReflow(state.doc, new Set([0]));
+  const plan = planPage(state.doc, 0, 1, new Set());
   state = state.apply(applyReflow(state, plan));
   // The block goes to the *front* of the next page, so reading order down the
   // document is unchanged: a, b, c, tail.
@@ -203,42 +277,43 @@ test('applyReflow moves a block onto the next existing page', () => {
   assertValid(state.doc);
 });
 
+test('applyReflow moves several blocks in one transaction', () => {
+  let state = buildState(buildDoc([['a', 'b', 'c', 'd']]));
+  const plan = planPage(state.doc, 0, 2, new Set());
+  state = state.apply(applyReflow(state, plan));
+  // Two of four blocks move, so the source keeps two.
+  assert.equal(textOf(state.doc), 'a|b//c|d');
+  assertValid(state.doc);
+});
+
 test('applyReflow creates a new page when none follows', () => {
   let state = buildState(buildDoc([['a', 'b', 'c']]));
-  const plan = planReflow(state.doc, new Set([0]));
+  const plan = planPage(state.doc, 0, 1, new Set());
   state = state.apply(applyReflow(state, plan));
   assert.equal(state.doc.childCount, 2);
   assert.equal(textOf(state.doc), 'a|b//c');
   assertValid(state.doc);
 });
 
-test('applyReflow preserves the order of the moved block', () => {
-  let state = buildState(buildDoc([['first', 'second', 'third']]));
-  const plan = planReflow(state.doc, new Set([0]));
-  state = state.apply(applyReflow(state, plan));
-  assert.deepEqual(blocksOf(state.doc, 0), ['first', 'second']);
-  assert.deepEqual(blocksOf(state.doc, 1), ['third']);
-});
-
-test('a page drains to a single block before it is pinned as overfull', () => {
+test('a page drains to the minimum splittable block count', () => {
   let state = buildState(buildDoc([['a', 'b', 'c', 'd', 'e']]));
-  // Nothing is pinned yet; the loop ends when page 0 can no longer split.
   for (let pass = 0; pass < 10; pass += 1) {
-    const plan = planReflow(state.doc, new Set([0]));
+    const plan = planPage(state.doc, 0, 1, new Set());
     if (!plan || plan.kind !== 'move') break;
     state = state.apply(applyReflow(state, plan));
   }
-  assert.deepEqual(blocksOf(state.doc, 0), ['a']);
-  assert.deepEqual(blocksOf(state.doc, 1), ['b', 'c', 'd', 'e']);
+  // It stops with two blocks, because moving another would leave one, which
+  // could not fit anyway and would have to be grown instead.
+  assert.deepEqual(blocksOf(state.doc, 0), ['a', 'b']);
+  assert.deepEqual(blocksOf(state.doc, 1), ['c', 'd', 'e']);
   assertValid(state.doc);
 });
 
 test('a full reflow cascade conserves every block', () => {
   const original = ['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h'];
   let state = buildState(buildDoc([original.slice(0, 5), original.slice(5)]));
-  // Simulate a cascade: page 0 overflows until it holds a single block.
   for (let pass = 0; pass < 10; pass += 1) {
-    const plan = planReflow(state.doc, new Set([0]), new Set([0]));
+    const plan = planPage(state.doc, 0, 1, new Set());
     if (!plan || plan.kind !== 'move') break;
     state = state.apply(applyReflow(state, plan));
   }
@@ -248,35 +323,28 @@ test('a full reflow cascade conserves every block', () => {
 });
 
 test('applyReflow is a no-op for a grow plan', () => {
-  const state = buildState(buildDoc([['huge']]));
+  const state = buildState(buildDoc([['a', 'b']]));
   assert.equal(applyReflow(state, { kind: 'grow', pageIndex: 0 }), null);
 });
 
 test('applyReflow is a no-op for a page that does not exist', () => {
   const state = buildState(buildDoc([['a']]));
-  const plan = { kind: 'move', pageIndex: 7, targetIndex: 8 };
+  assert.equal(applyReflow(state, { kind: 'move', pageIndex: 7, targetIndex: 8 }), null);
+});
+
+test('applyReflow refuses a plan with an out-of-range position', () => {
+  // A stale plan must not be trusted to slice a hard-coded range.
+  const state = buildState(buildDoc([['a', 'b', 'c']]));
+  const plan = { kind: 'move', pageIndex: 0, from: -1, to: 0, targetIndex: 1 };
   assert.equal(applyReflow(state, plan), null);
 });
 
-test('applyReflow ignores the plan range and uses the live document', () => {
-  // A stale plan must not slice a hard-coded range; positions are re-derived.
+test('applyReflow derives positions when the plan omits them', () => {
   const state = buildState(buildDoc([['a', 'b', 'c']]));
-  const plan = { kind: 'move', pageIndex: 0, from: -1, to: 0, targetIndex: 1 };
-  const result = state.apply(applyReflow(state, plan));
+  const result = state.apply(applyReflow(state, { kind: 'move', pageIndex: 0, targetIndex: 1 }));
   assert.deepEqual(blocksOf(result.doc, 0), ['a', 'b']);
   assert.deepEqual(blocksOf(result.doc, 1), ['c']);
   assertValid(result.doc);
-});
-
-test('applyReflow re-derives positions from the live document', () => {
-  // A plan computed against an older document must not be trusted blindly.
-  const stale = buildState(buildDoc([['a', 'b', 'c']]));
-  const plan = planReflow(stale.doc, new Set([0]));
-  const live = buildState(buildDoc([['a', 'b', 'c', 'd', 'e']]));
-  const result = live.apply(applyReflow(live, plan));
-  // Only 'e' should have moved, taken from the *live* document.
-  assert.deepEqual(blocksOf(result.doc, 0), ['a', 'b', 'c', 'd']);
-  assert.deepEqual(blocksOf(result.doc, 1), ['e']);
 });
 
 // --------------------------------------------------------------------------
@@ -301,8 +369,7 @@ test('collapseToSinglePage keeps every block', () => {
 });
 
 test('collapseToSinglePage output is a valid document', () => {
-  const collapsed = collapseToSinglePage(buildDoc([['a'], ['b']]));
-  assertValid(collapsed);
+  assertValid(collapseToSinglePage(buildDoc([['a'], ['b']])));
 });
 
 test('collapseToSinglePage always leaves at least one block', () => {
@@ -316,7 +383,7 @@ test('a collapsed document can be re-expanded by the paginator', () => {
   assert.equal(state.doc.childCount, 1);
   assert.deepEqual(blocksOf(state.doc, 0), ['a', 'b', 'c', 'd']);
 
-  state = state.apply(applyReflow(state, planReflow(state.doc, new Set([0]))));
+  state = state.apply(applyReflow(state, planPage(state.doc, 0, 1, new Set())));
   assert.equal(state.doc.childCount, 2);
   assert.equal(textOf(state.doc), 'a|b|c//d');
   assertValid(state.doc);
