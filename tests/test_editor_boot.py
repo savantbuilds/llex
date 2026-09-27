@@ -148,6 +148,49 @@ window.AbortController = AbortController;
 
   // Run last: this mutates the document, so everything above has to observe
   // the state as loaded.
+  result.findCheck = (function () {
+    if (!window.llex || !window.llex.find) return { skipped: true };
+    var find = window.llex.find;
+    var ed = window.llex.editor;
+    var out = { hasController: Boolean(find.controller) };
+
+    find.open();
+    out.panelOpened = !window.document.getElementById('find-panel').hidden;
+
+    var field = window.document.getElementById('find-query');
+    field.value = 'test';
+    out.matchCount = find.controller.search({ query: 'test' });
+    out.countLabel = window.document.getElementById('find-count').textContent;
+    out.hasHighlight = Boolean(ed.view.dom.querySelector('.find-match'));
+
+    find.controller.next();
+    out.advanced = find.controller.active > 0;
+
+    // Replace the current match, then the remainder.
+    var replaceField = window.document.getElementById('find-replace');
+    replaceField.value = 'replaced';
+    find.controller.search({ query: 'test' });
+    out.replacedOne = find.controller.replaceCurrent('replaced');
+    out.remainingAfterOne = find.controller.matchCount;
+
+    find.controller.search({ query: 'test' });
+    out.replacedAll = find.controller.replaceAll('replaced');
+    out.testLeft = (ed.getText().match(/test/g) || []).length;
+
+    // A half-typed regex is the normal state while typing; it must not throw.
+    out.invalidRegexThrew = null;
+    try {
+      find.controller.search({ query: '[bad', regex: true });
+    } catch (e) {
+      out.invalidRegexThrew = String(e);
+    }
+
+    find.close();
+    out.panelClosed = window.document.getElementById('find-panel').hidden;
+    return out;
+  })();
+
+  // Run last of all: this also mutates the document.
   result.undoCheck = (function () {
     if (!window.llex || !window.llex.editor) return { skipped: true };
     var ed = window.llex.editor;
@@ -217,7 +260,8 @@ def boot_result(harness: Path, tmp_path_factory: pytest.TempPathFactory) -> dict
     directory = tmp_path_factory.mktemp("boot")
     document = Document(
         title="E2E",
-        content='<div class="page"><h1>Boot</h1><p>Hello.</p></div>',
+        content=('<div class="page"><h1>Boot</h1><p>One test here.</p>'
+                        '<p>And a second test there.</p></div>'),
     )
     server = launcher._ServerThread(
         build_app(AppServices(document=document)),
@@ -288,7 +332,10 @@ class TestEditorBoots:
         assert boot_result.get("pageCount") == 1
 
     def test_the_document_round_trips(self, boot_result: dict[str, object]) -> None:
-        assert boot_result.get("html") == '<div class="page"><h1>Boot</h1><p>Hello.</p></div>'
+        assert boot_result.get("html") == (
+            '<div class="page"><h1>Boot</h1><p>One test here.</p>'
+            '<p>And a second test there.</p></div>'
+        )
 
     def test_the_schema_includes_the_page_node(self, boot_result: dict[str, object]) -> None:
         nodes = list(boot_result.get("schemaNodes") or [])
@@ -370,6 +417,57 @@ class TestTokenHandshake:
             assert "token=" not in str(call["url"])
 
 
+@pytest.fixture(scope="module")
+def find_result(boot_result: dict[str, object]) -> dict[str, object]:
+    """The find-and-replace probe's report from the single boot."""
+    return dict(boot_result.get("findCheck") or {})
+
+
+class TestFindAndReplace:
+    """Find and replace, driven through the real UI.
+
+    The menu item previously flashed "Find is not implemented yet", so this is
+    both the feature and the proof that it is reachable.
+    """
+
+    def test_the_panel_was_created(self, find_result: dict[str, object]) -> None:
+        assert find_result, f"no find panel was reported: {find_result}"
+        assert find_result.get("skipped") is not True, "the find panel was not created"
+
+    def test_the_panel_opens(self, find_result: dict[str, object]) -> None:
+        assert find_result.get("panelOpened") is True
+
+    def test_matches_are_found_and_counted(self, find_result: dict[str, object]) -> None:
+        assert find_result.get("matchCount") == 2, "the fixture document contains two matches"
+        assert "of 2" in str(find_result.get("countLabel"))
+
+    def test_matches_are_highlighted(self, find_result: dict[str, object]) -> None:
+        assert find_result.get("hasHighlight") is True
+
+    def test_next_advances(self, find_result: dict[str, object]) -> None:
+        assert find_result.get("advanced") is True
+
+    def test_replace_one(self, find_result: dict[str, object]) -> None:
+        assert find_result.get("replacedOne") is True
+        assert find_result.get("remainingAfterOne") == 1
+
+    def test_replace_all_clears_every_match(self, find_result: dict[str, object]) -> None:
+        assert find_result.get("replacedAll") == 1
+        assert find_result.get("testLeft") == 0
+
+    def test_an_incomplete_regex_does_not_throw(self, find_result: dict[str, object]) -> None:
+        assert find_result.get("invalidRegexThrew") is None
+
+    def test_the_panel_closes(self, find_result: dict[str, object]) -> None:
+        assert find_result.get("panelClosed") is True
+
+    def test_the_menu_item_no_longer_reports_it_is_unimplemented(self) -> None:
+        """The stub said "not implemented"; nothing should claim that now."""
+        script_dir = Path(__file__).resolve().parent.parent / "llex" / "static" / "js"
+        for path in script_dir.glob("*.js"):
+            assert "not implemented yet" not in path.read_text(encoding="utf-8"), path.name
+
+
 class TestUndoAndPagination:
     """A reflow must be part of the undo step that caused it.
 
@@ -417,10 +515,10 @@ class TestChrome:
         assert boot_result.get("statusText") == "Ready"
 
     def test_statistics_were_computed(self, boot_result: dict[str, object]) -> None:
-        # "Boot" and "Hello." are two words and ten characters.
+        # "Boot", "One test here." and "And a second test there." is nine words.
         meta = str(boot_result.get("metaText"))
-        assert "2 words" in meta
-        assert "10 characters" in meta
+        assert "9 words" in meta
+        assert "42 characters" in meta
         assert "1 pages" in meta
 
     def test_the_zoom_indicator_shows_a_level(self, boot_result: dict[str, object]) -> None:

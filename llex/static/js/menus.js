@@ -69,7 +69,6 @@ export function createMenus(options) {
       }
     }],
     ['menu-select-all', () => editor.chain().focus().selectAll().run()],
-    ['menu-find', () => flash(status, 'Find is not implemented yet.')],
     ['menu-zoom-in', () => stepZoom(1)],
     ['menu-zoom-out', () => stepZoom(-1)],
     ['menu-zoom-reset', () => applyZoom(100)],

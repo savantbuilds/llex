@@ -48,6 +48,7 @@
         <div class="dropdown-divider" role="separator"></div>
         <button type="button" class="dropdown-item" id="menu-select-all" role="menuitem">Select All <kbd>Ctrl+A</kbd></button>
         <button type="button" class="dropdown-item" id="menu-find" role="menuitem">Find… <kbd>Ctrl+F</kbd></button>
+        <button type="button" class="dropdown-item" id="menu-replace" role="menuitem">Replace&#8230; <kbd>Ctrl+H</kbd></button>
       </div>
     </div>
 
@@ -158,6 +159,31 @@
   </header>
 
   <div id="main-content">
+    <!-- Find and replace. A bar rather than a modal, so it never covers the
+         text and Escape always dismisses it. -->
+    <div id="find-panel" class="find-panel" role="search" aria-label="Find and replace" hidden>
+      <div class="find-row">
+        <label class="visually-hidden" for="find-query">Find</label>
+        <input type="search" id="find-query" placeholder="Find" autocomplete="off" spellcheck="false">
+        <span id="find-count" class="find-count" role="status" aria-live="polite"></span>
+        <button type="button" id="find-previous" class="btn btn-secondary find-nav" title="Previous match (Shift+Enter)" aria-label="Previous match">&#9650;</button>
+        <button type="button" id="find-next" class="btn btn-secondary find-nav" title="Next match (Enter)" aria-label="Next match">&#9660;</button>
+        <button type="button" id="find-close" class="btn btn-secondary find-nav" title="Close (Esc)" aria-label="Close find">&#10005;</button>
+      </div>
+      <div class="find-row">
+        <label class="visually-hidden" for="find-replace">Replace with</label>
+        <input type="text" id="find-replace" placeholder="Replace with" autocomplete="off" spellcheck="false">
+        <button type="button" id="find-replace-one" class="btn btn-secondary">Replace</button>
+        <button type="button" id="find-replace-all" class="btn btn-secondary">All</button>
+      </div>
+      <div class="find-row find-flags">
+        <label><input type="checkbox" id="find-case"> Match case</label>
+        <label><input type="checkbox" id="find-whole-word"> Whole word</label>
+        <label><input type="checkbox" id="find-regex"> Regex</label>
+        <span id="find-shortcut" class="find-hint"></span>
+      </div>
+    </div>
+
     <aside id="left-sidebar" aria-label="Document outline" aria-hidden="true">
       <h2>Document Outline</h2>
       <div id="document-outline" class="outline"></div>

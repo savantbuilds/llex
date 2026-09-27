@@ -384,6 +384,106 @@ kbd {
 }
 
 /* ==========================================================================
+   Find and replace
+   ========================================================================== */
+
+.find-panel {
+  position: absolute;
+  top: 8px;
+  inset-inline-end: 16px;
+  z-index: 60;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px;
+  border: 1px solid #4a4a4a;
+  border-radius: 8px;
+  background: #2b2b2b;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5);
+}
+
+.find-panel[hidden] {
+  display: none;
+}
+
+.find-row {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+
+.find-panel input[type="search"],
+.find-panel input[type="text"] {
+  min-width: 190px;
+  padding: 5px 8px;
+  border: 1px solid #555;
+  border-radius: 4px;
+  background: #1e1e1e;
+  color: #fff;
+}
+
+.find-panel input[type="search"]:focus-visible,
+.find-panel input[type="text"]:focus-visible {
+  border-color: var(--accent-bright);
+}
+
+.find-count {
+  min-width: 74px;
+  font-size: 11px;
+  color: var(--chrome-muted);
+  font-variant-numeric: tabular-nums;
+  text-align: center;
+}
+
+.find-count[data-state="none"] {
+  color: #ffb4ad;
+}
+
+.find-nav {
+  padding: 4px 8px;
+  font-size: 11px;
+}
+
+.find-flags {
+  gap: 12px;
+  font-size: 11px;
+  color: var(--chrome-muted);
+}
+
+.find-flags label {
+  display: inline-flex;
+  gap: 4px;
+  align-items: center;
+  white-space: nowrap;
+}
+
+.find-hint {
+  margin-inline-start: auto;
+  opacity: 0.7;
+}
+
+/* Search hits. The active one has to be obvious even to a user who cannot
+   distinguish the two colours, so it also differs in weight and decoration. */
+.tiptap .find-match {
+  background: rgba(244, 180, 26, 0.35);
+  border-radius: 2px;
+}
+
+.tiptap .find-match-active {
+  background: var(--warning);
+  color: #1a1200;
+  font-weight: 600;
+  outline: 2px solid #ff8a00;
+  outline-offset: 1px;
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .tiptap .find-match-active {
+    transition: background 0.12s ease;
+  }
+}
+
+/* ==========================================================================
    Main content and side panels
    ========================================================================== */
 
