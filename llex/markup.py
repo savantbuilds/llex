@@ -187,6 +187,36 @@ class ParsedDocument:
         for block in self.blocks:
             yield from block.iter_blocks()
 
+    def page_groups(self) -> tuple[tuple[Block, ...], ...]:
+        """Top-level blocks grouped into the pages they were laid out on.
+
+        A ``page`` block is transparent to every reader of the text, so nothing
+        else in the codebase needs to know the pagination engine exists. Formats
+        that can express a page break use this to restore the boundaries the
+        editor computed; formats that cannot -- plain text, Markdown -- correctly
+        ignore it, because their readers do the pagination themselves.
+
+        A document with no page wrappers is one group, so a caller does not have
+        to handle "paginated" and "unpaginated" separately. Content sitting
+        outside any wrapper, which a caller can produce by appending blocks, forms
+        a group of its own rather than being dropped.
+        """
+        if not any(block.kind == "page" for block in self.blocks):
+            return (self.blocks,) if self.blocks else ()
+
+        groups: list[tuple[Block, ...]] = []
+        for block in self.blocks:
+            if block.kind == "page":
+                groups.append(block.children)
+            else:
+                groups.append((block,))
+        return tuple(groups)
+
+    @property
+    def is_paginated(self) -> bool:
+        """Whether the source document carried explicit page boundaries."""
+        return any(block.kind == "page" for block in self.blocks)
+
     def headings(self) -> tuple[Block, ...]:
         """Every heading block, in document order. Backs the outline view."""
         return tuple(b for b in self.iter_blocks() if b.kind == "heading")

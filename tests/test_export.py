@@ -15,6 +15,7 @@ import pytest
 
 from llex.document import Document, PageSetup
 from llex.export import SUPPORTED_FORMATS, Exporter, ExportError
+from llex.markup import parse_document, to_plain_text
 
 RICH_HTML = (
     '<div class="page">'
@@ -391,3 +392,117 @@ class TestZip:
         with zipfile.ZipFile(io.BytesIO(exporter.render(".zip"))) as archive:
             assert archive.namelist() == ["index.html"]
             assert archive.read("index.html").startswith(b"<!DOCTYPE html>")
+
+#: A document laid out as three pages, as the editor would have written it.
+PAGINATED_HTML = (
+    '<div class="page"><h1>Alpha</h1><p>one</p></div>'
+    '<div class="page"><h2>Beta</h2><p>two</p></div>'
+    '<div class="page"><p>three</p></div>'
+)
+
+
+class TestPageGroups:
+    """Where the editor's page boundaries live after parsing."""
+
+    def test_a_paginated_document_reports_its_pages(self) -> None:
+        parsed = parse_document(PAGINATED_HTML)
+        assert parsed.is_paginated is True
+        assert [len(group) for group in parsed.page_groups()] == [2, 2, 1]
+
+    def test_an_unpaginated_document_is_one_group(self) -> None:
+        """A caller should not have to branch on whether the source was paginated."""
+        parsed = parse_document("<p>a</p><p>b</p>")
+        assert parsed.is_paginated is False
+        assert [len(group) for group in parsed.page_groups()] == [2]
+
+    def test_an_empty_document_is_no_groups(self) -> None:
+        assert parse_document("").page_groups() == ()
+
+    def test_content_outside_a_page_is_not_dropped(self) -> None:
+        """A caller may append blocks; they must still be exported."""
+        assert "appended" in to_plain_text(PAGINATED_HTML + "<p>appended</p>")
+
+
+class TestExportedPageBreaks:
+    """Page breaks in the formats that can express one.
+
+    The editor computes pagination carefully; an export that discarded it handed
+    the reader a document that was not the one that was written.
+    """
+
+    @pytest.fixture
+    def paginated(self) -> Exporter:
+        return Exporter(Document(title="Paged", content=PAGINATED_HTML))
+
+    def test_html_wraps_each_page_in_a_section(self, paginated: Exporter) -> None:
+        html = paginated.render(".html").decode("utf-8")
+        body = html.split("<body>", 1)[1]
+        assert body.count('<section class="llex-page"') == 3
+
+    def test_html_breaks_between_pages_but_not_after_the_last(self, paginated: Exporter) -> None:
+        # A break after the final page would leave a blank one.
+        html = paginated.render(".html").decode("utf-8")
+        body = html.split("<body>", 1)[1]
+        assert body.count('data-page-break="after"') == 2
+        assert "data-page-break" not in body.rsplit("<section", 1)[1]
+
+    def test_html_carries_the_css_the_break_needs(self, paginated: Exporter) -> None:
+        html = paginated.render(".html").decode("utf-8")
+        assert "break-after: page" in html
+        assert "page-break-after: always" in html
+
+    def test_html_preserves_document_order(self, paginated: Exporter) -> None:
+        html = paginated.render(".html").decode("utf-8")
+        assert html.index("Alpha") < html.index("Beta") < html.index("three")
+
+    def test_rtf_emits_one_break_per_boundary(self, paginated: Exporter) -> None:
+        rtf = paginated.render(".rtf").decode("ascii")
+        assert rtf.count(r"\page ") == 2
+
+    def test_docx_emits_one_break_per_boundary(self, paginated: Exporter) -> None:
+        with zipfile.ZipFile(io.BytesIO(paginated.render(".docx"))) as archive:
+            body = archive.read("word/document.xml").decode("utf-8")
+        assert body.count('w:type="page"') == 2
+
+    def test_odt_emits_one_break_per_boundary(self, paginated: Exporter) -> None:
+        with zipfile.ZipFile(io.BytesIO(paginated.render(".odt"))) as archive:
+            content = archive.read("content.xml").decode("utf-8")
+        assert content.count('break-before="page"') == 2
+
+    def test_odt_does_not_break_before_the_first_page(self, paginated: Exporter) -> None:
+        """The document already starts on a page; a break there opens on a blank one."""
+        with zipfile.ZipFile(io.BytesIO(paginated.render(".odt"))) as archive:
+            content = archive.read("content.xml").decode("utf-8")
+        first = content.index("Alpha")
+        assert 'break-before="page"' not in content[:first]
+
+    def test_odt_breaks_are_not_empty_paragraphs(self, paginated: Exporter) -> None:
+        """A dedicated empty paragraph would add a visible blank line."""
+        with zipfile.ZipFile(io.BytesIO(paginated.render(".odt"))) as archive:
+            content = archive.read("content.xml").decode("utf-8")
+        assert '<text:p break-before="page"/>' not in content
+
+    def test_epub_honours_the_boundaries_too(self, paginated: Exporter) -> None:
+        with zipfile.ZipFile(io.BytesIO(paginated.render(".epub"))) as archive:
+            content = archive.read("OEBPS/content.xhtml").decode("utf-8")
+            styles = archive.read("OEBPS/style.css").decode("utf-8")
+        assert content.count('<section class="llex-page"') == 3
+        assert "break-after: page" in styles
+
+    def test_plain_text_gets_no_page_markup(self, paginated: Exporter) -> None:
+        """Plain text has no pages; inventing markup would corrupt it."""
+        text = paginated.render(".txt").decode("utf-8")
+        assert "<" not in text
+        assert "\\page" not in text
+
+    def test_an_unpaginated_document_gets_no_breaks(self) -> None:
+        """A document that was never laid out must not gain invented page breaks."""
+        flat = Exporter(Document(title="Flat", content="<p>a</p><p>b</p>"))
+        body = flat.render(".html").decode("utf-8").split("<body>", 1)[1]
+        assert "<section" not in body
+        assert flat.render(".rtf").decode("ascii").count(r"\page ") == 0
+
+    def test_zip_shares_the_html_pagination(self, paginated: Exporter) -> None:
+        with zipfile.ZipFile(io.BytesIO(paginated.render(".zip"))) as archive:
+            html = archive.read("index.html").decode("utf-8")
+        assert html.count('<section class="llex-page"') == 3

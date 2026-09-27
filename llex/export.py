@@ -280,8 +280,14 @@ def _html_inline(runs: Iterable[TextRun]) -> str:
     return "".join(out)
 
 
-def _html_body(parsed: ParsedDocument) -> str:
-    """Render the parsed tree as an HTML fragment."""
+def _html_body(parsed: ParsedDocument, *, page_breaks: bool = False) -> str:
+    """Render the parsed tree as an HTML fragment.
+
+    With ``page_breaks`` the blocks of each page are wrapped in a section
+    carrying a forced break, so the page boundaries the editor computed survive
+    into a reader that paginates for itself. Off by default for the fragment
+    form, which is embedded in a larger document; the standalone page turns it on.
+    """
     parts: list[str] = []
 
     def emit(blocks: Sequence[Block]) -> None:
@@ -311,7 +317,18 @@ def _html_body(parsed: ParsedDocument) -> str:
             else:
                 parts.append(f"<p{align}>{_html_inline(block.runs)}</p>")
 
-    emit(parsed.blocks)
+    if not page_breaks or not parsed.is_paginated:
+        emit(parsed.blocks)
+        return "\n".join(parts)
+
+    # Each page becomes a section that ends with a forced break. The last page
+    # does not, or the document ends with a blank one.
+    groups = parsed.page_groups()
+    for index, group in enumerate(groups):
+        marker = "" if index == len(groups) - 1 else ' data-page-break="after"'
+        parts.append(f'<section class="llex-page"{marker}>')
+        emit(group)
+        parts.append("</section>")
     return "\n".join(parts)
 
 
@@ -348,6 +365,11 @@ _STANDALONE_CSS: Final = """
   }}
   blockquote {{ margin: 0 0 6pt; padding-left: 1em; border-left: 3px solid #ddd; color: #444; }}
   hr {{ border: 0; border-top: 1px solid #ccc; margin: 12pt 0; }}
+  /* Restore the page boundaries the editor computed. `break-after` is the
+     standard property; `page-break-after` is its legacy alias, still needed for
+     older WebKit. The attribute rather than a bare class so the markup stays
+     meaningful without the stylesheet. */
+  [data-page-break="after"] {{ break-after: page; page-break-after: always; }}
   @media print {{
     body {{ background: #fff; padding: 0; max-width: none; }}
     article {{ box-shadow: none; padding: 0; }}
@@ -374,7 +396,7 @@ def write_html(document: Document, parsed: ParsedDocument) -> bytes:
         f"<title>{title}</title>\n"
         f"<style>{css}</style>\n"
         "</head>\n<body>\n<article>\n"
-        f"{_html_body(parsed)}\n"
+        f"{_html_body(parsed, page_breaks=True)}\n"
         "</article>\n</body>\n</html>\n"
     )
     return markup.encode("utf-8")
@@ -504,7 +526,15 @@ def write_rtf(document: Document, parsed: ParsedDocument) -> bytes:
                 out.append(paragraph(inline(block.runs), block.align or "left"))
 
     out: list[str] = []
-    emit(parsed.blocks)
+    if parsed.is_paginated:
+        # RTF has a first-class page break, so the editor's boundaries can be
+        # restored exactly rather than left to the reader's own pagination.
+        for group in parsed.page_groups():
+            if out:
+                out.append(r"\page ")
+            emit(group)
+    else:
+        emit(parsed.blocks)
 
     page = document.page
     color_table = "".join(
@@ -569,7 +599,7 @@ def _highlight_enum(index: Any, color: str | None) -> Any:
 def write_docx(document: Document, parsed: ParsedDocument) -> bytes:
     """Office Open XML via ``python-docx``."""
     import docx
-    from docx.enum.text import WD_ALIGN_PARAGRAPH, WD_COLOR_INDEX
+    from docx.enum.text import WD_ALIGN_PARAGRAPH, WD_BREAK, WD_COLOR_INDEX
     from docx.shared import Inches, Pt, RGBColor
 
     align_map = {
@@ -649,7 +679,15 @@ def write_docx(document: Document, parsed: ParsedDocument) -> bytes:
                 align(paragraph, block)
                 add_runs(paragraph, block.runs)
 
-    emit(parsed.blocks)
+    if parsed.is_paginated:
+        # Word's own page break, so the editor's pagination survives rather than
+        # being recomputed from scratch by whatever opens the file.
+        for group in parsed.page_groups():
+            if package.paragraphs:
+                package.add_paragraph().add_run().add_break(WD_BREAK.PAGE)
+            emit(group)
+    else:
+        emit(parsed.blocks)
 
     buffer = BytesIO()
     package.save(buffer)
@@ -663,6 +701,7 @@ def write_docx(document: Document, parsed: ParsedDocument) -> bytes:
 
 def write_odt(document: Document, parsed: ParsedDocument) -> bytes:
     """OpenDocument Text via ``odfpy``."""
+    from odf.namespaces import FONS
     from odf.opendocument import OpenDocumentText
     from odf.style import (
         MasterPage,
@@ -801,7 +840,20 @@ def write_odt(document: Document, parsed: ParsedDocument) -> bytes:
             else:
                 package.text.addElement(_build_paragraph(block, style_name))
 
-    emit(parsed.blocks)
+    if parsed.is_paginated:
+        # ODF expresses a page break as `fo:break-before` on the first element of
+        # the new page. Applied to the element itself rather than to a dedicated
+        # empty paragraph, which would add a visible blank line at the top of
+        # every page after the first. The first page gets no break: it is where
+        # the document starts, and marking it would open on a blank page.
+        for index, group in enumerate(parsed.page_groups()):
+            before = len(package.text.childNodes)
+            emit(group)
+            added = package.text.childNodes[before:]
+            if index > 0 and added:
+                added[0].setAttrNS(FONS, "break-before", "page")
+    else:
+        emit(parsed.blocks)
 
     buffer = BytesIO()
     package.save(buffer)
@@ -829,8 +881,12 @@ def _stable_uuid(seed: str) -> str:
 _EPUB_CSS: Final = (
     "@page { margin: 5%; }\n"
     "body { font-family: serif; line-height: 1.5; }\n"
-    "h1, h2, h3 { page-break-after: avoid; }\n"
+    "h1, h2, h3 { page-break-after: avoid; break-after: avoid; }\n"
     "pre { white-space: pre-wrap; }\n"
+    # A reading system paginates for itself, so the editor's page boundaries are
+    # a suggestion here rather than a guarantee. Honouring them at least keeps a
+    # document that was carefully laid out from being silently re-flowed.
+    '[data-page-break="after"] { break-after: page; page-break-after: always; }\n'
 )
 
 
@@ -848,7 +904,7 @@ def write_epub(document: Document, parsed: ParsedDocument) -> bytes:
         "<head><title>"
         f"{escaped}</title>"
         '<link rel="stylesheet" type="text/css" href="style.css"/></head>\n'
-        f"<body>\n{_html_body(parsed)}\n</body>\n</html>\n"
+        f"<body>\n{_html_body(parsed, page_breaks=True)}\n</body>\n</html>\n"
     )
     container = (
         '<?xml version="1.0" encoding="utf-8"?>\n'
