@@ -46,6 +46,21 @@ def exporter(document: Document) -> Exporter:
     return Exporter(document)
 
 
+def stable_payload(payload: bytes) -> tuple[str, ...]:
+    """A timestamp-independent view of a rendered export.
+
+    ``zipfile`` stamps every entry with the current time, so two renders of the
+    same document a second apart are not byte-identical. Comparing the entry
+    names and decoded contents is what actually matters.
+    """
+    if payload[:2] != b"PK":
+        return (payload.decode("utf-8", "replace"),)
+    with zipfile.ZipFile(io.BytesIO(payload)) as archive:
+        return tuple(
+            f"{name}\n{archive.read(name).decode('utf-8', 'replace')}" for name in sorted(archive.namelist())
+        )
+
+
 class TestFormatRegistry:
     def test_every_advertised_format_renders(self, exporter: Exporter) -> None:
         for suffix in SUPPORTED_FORMATS:
@@ -71,10 +86,10 @@ class TestFormatRegistry:
 
 class TestSuffixHandling:
     def test_bare_extension_is_accepted(self, exporter: Exporter) -> None:
-        assert exporter.render("docx") == exporter.render(".docx")
+        assert stable_payload(exporter.render("docx")) == stable_payload(exporter.render(".docx"))
 
     def test_case_is_insensitive(self, exporter: Exporter) -> None:
-        assert exporter.render(".DOCX") == exporter.render(".docx")
+        assert stable_payload(exporter.render(".DOCX")) == stable_payload(exporter.render(".docx"))
 
     def test_unsupported_format_is_rejected(self, exporter: Exporter) -> None:
         with pytest.raises(ExportError, match="unsupported export format"):

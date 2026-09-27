@@ -13,7 +13,6 @@
 
 import { Editor } from '@tiptap/core';
 import StarterKit from '@tiptap/starter-kit';
-import Underline from '@tiptap/extension-underline';
 import TextAlign from '@tiptap/extension-text-align';
 import Document from '@tiptap/extension-document';
 
@@ -48,13 +47,19 @@ const PIXELS_PER_INCH = 96;
 /** A blank page, so the schema is always satisfied. */
 const EMPTY_DOCUMENT = '<div class="page"><p></p></div>';
 
-/** Per-document state the rest of the app reads from `editor.storage`. */
-const documentStats = {
-  name: 'documentStats',
-  addStorage() {
-    return { words: 0, characters: 0, pages: 1, dirty: false, fileName: null, title: '' };
-  },
-};
+/**
+ * Application state shared between modules.
+ *
+ * Owned here rather than on `editor.storage`, because TipTap namespaces
+ * extension storage by extension name -- `editor.storage.documentStats`, not
+ * `editor.storage.stats` -- which makes it the wrong home for a bag of
+ * application state that several unrelated modules need to read.
+ *
+ * @returns {{words: number, characters: number, pages: number, dirty: boolean, fileName: string|null, title: string}}
+ */
+function createAppState() {
+  return { words: 0, characters: 0, pages: 1, dirty: false, fileName: null, title: '' };
+}
 
 function escapeHtml(text) {
   return String(text).replace(
@@ -64,6 +69,7 @@ function escapeHtml(text) {
 }
 
 async function boot() {
+  const state = createAppState();
   const surface = require('editor')[0];
   if (!surface) return;
 
@@ -91,9 +97,9 @@ async function boot() {
 
   const scheduleStats = debounce(() => {
     const text = editor.getText();
-    editor.storage.stats.words = countWords(text);
-    editor.storage.stats.characters = countCharacters(text);
-    editor.storage.stats.pages = editor.view.dom.querySelectorAll('.page').length || 1;
+    state.words = countWords(text);
+    state.characters = countCharacters(text);
+    state.pages = editor.view.dom.querySelectorAll('.page').length || 1;
     statusBar.renderMeta();
   }, STATS_DEBOUNCE_MS);
 
@@ -105,15 +111,14 @@ async function boot() {
       PagedDocument(Document),
       Page,
       Scaffold,
+      // StarterKit v3 already bundles Underline, so registering it again would
+      // install a duplicate extension under the same name.
       StarterKit.configure({ document: false }),
-      Underline,
       TextAlign.configure({ types: ['heading', 'paragraph'] }),
-      documentStats,
     ],
     content: EMPTY_DOCUMENT,
     editorProps: {
       attributes: {
-        class: 'tiptap',
         spellcheck: 'true',
         role: 'textbox',
         'aria-multiline': 'true',
@@ -142,7 +147,13 @@ async function boot() {
   // -- Components --------------------------------------------------------- //
 
   const status = byId('status-bar');
-  const statusBar = createStatusBar({ editor, status, meta: byId('status-meta') });
+  const statusBar = createStatusBar({
+    editor,
+    state,
+    status,
+    message: byId('status-bar-text'),
+    meta: byId('status-meta'),
+  });
   const ribbon = createRibbon(editor);
   const outline = createOutline(editor);
 
@@ -195,6 +206,7 @@ async function boot() {
 
   const files = createFileOperations(editor, {
     api,
+    state,
     status,
     onLoaded: loadPayload,
     onSaved: (payload) => statusBar.setDocumentState(payload.document),
@@ -204,17 +216,14 @@ async function boot() {
   // -- Dirty tracking ----------------------------------------------------- //
 
   markDirtyNow = debounce(() => {
-    statusBar.setDocumentState({
-      dirty: true,
-      fileName: editor.storage.fileName,
-      title: editor.storage.title,
-    });
+    state.dirty = true;
+    statusBar.renderMeta();
   }, DIRTY_DEBOUNCE_MS);
 
   // pywebview closes the process on window close, so `beforeunload` is the only
   // chance to warn about unsaved work.
   window.addEventListener('beforeunload', (event) => {
-    if (!editor.storage.dirty) return;
+    if (!state.dirty) return;
     event.preventDefault();
     event.returnValue = '';
   });
@@ -233,7 +242,7 @@ async function boot() {
         return;
       }
       executeButton.disabled = true;
-      executeButton.textContent = 'Running…';
+      executeButton.textContent = 'RunningÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¦';
       try {
         const { total, applied, failures } = await runScaffolds(editor, {
           run: (scaffolds) => api.runScaffolds(scaffolds),
@@ -316,7 +325,7 @@ async function boot() {
   window.setTimeout(() => paginator.run(), 400);
 
   // Exposed deliberately, for debugging from the webview console.
-  window.llex = { editor, paginator, api, menus, settings, files, assistant, contextMenu };
+  window.llex = { editor, paginator, api, menus, settings, files, assistant, contextMenu, state };
 }
 
 function start() {

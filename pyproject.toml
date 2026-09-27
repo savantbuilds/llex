@@ -62,10 +62,15 @@ llex = [
     "static/*.css",
     "static/*.js",
     "static/*.map",
-    "static/vendor/**",
+    # The editor sources the bundle is built from. Shipped so `npm run build`
+    # works against an installed wheel, not just a source checkout.
+    "static/js/*.js",
 ]
 
 [tool.pytest.ini_options]
+markers = [
+  "e2e: boots the real server and the real front-end bundle; needs node and npm ci",
+]
 minversion = "8.0"
 testpaths = ["tests"]
 addopts = "-ra --strict-markers --strict-config"
@@ -119,8 +124,11 @@ ignore = [
 ]
 
 [tool.ruff.lint.per-file-ignores]
-# Tests legitimately assert on exception paths.
+# Tests legitimately assert on exception paths and use assertions.
 "tests/*" = ["S101", "S105", "S106"]
+# The end-to-end test must fetch from a loopback server and shell out to node.
+# Both are controlled by the test itself, not by untrusted input.
+"tests/test_editor_boot.py" = ["S310", "S603", "S607"]
 
 [tool.ruff.lint.isort]
 known-first-party = ["llex"]

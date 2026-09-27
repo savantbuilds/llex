@@ -10,29 +10,24 @@ import { busyLabel, flash } from './dom.js';
 
 /**
  * @param {import('@tiptap/core').Editor} editor
- * @param {{api: object, status: HTMLElement|null, onLoaded: (payload: object) => void, onSaved: (payload: object) => void}} options
+ * @param {{api: object, state: object, status: HTMLElement|null, onLoaded: (payload: object) => void, onSaved: (payload: object) => void}} options
  */
 export function createFileOperations(editor, options) {
-  const { api, status, onLoaded, onSaved } = options;
-
-  const currentTitle = () => editor.getAttributes('heading') || '';
+  const { api, state, status, onLoaded, onSaved } = options;
 
   /**
    * Confirm before discarding unsaved work.
    * @returns {boolean} true when it is safe to proceed
    */
   function confirmDiscard() {
-    if (!editor.storage.dirty) return true;
-    const answer = window.confirm(
-      'This document has unsaved changes. Discard them and continue?',
-    );
-    return answer;
+    if (!state.dirty) return true;
+    return window.confirm('This document has unsaved changes. Discard them and continue?');
   }
 
   function handle(label, task) {
     const element = document.getElementById(label);
     return async () => {
-      busyLabel(element, true, 'Working…');
+      busyLabel(element, true, 'Workingâ€¦');
       try {
         return await task();
       } finally {
@@ -62,7 +57,7 @@ export function createFileOperations(editor, options) {
   });
 
   const save = handle('menu-save', async () => {
-    const payload = await api.save(editor.getHTML(), currentTitle());
+    const payload = await api.save(editor.getHTML(), state.title);
     if (payload.status === 'cancelled') {
       flash(status, 'Save cancelled');
       return null;
@@ -73,7 +68,7 @@ export function createFileOperations(editor, options) {
   });
 
   const saveAs = handle('menu-save-as', async () => {
-    const payload = await api.saveAs(editor.getHTML(), currentTitle());
+    const payload = await api.saveAs(editor.getHTML(), state.title);
     if (payload.status === 'cancelled') {
       flash(status, 'Save cancelled');
       return null;
