@@ -396,6 +396,58 @@ def _register_routes(app: FastAPI) -> None:
         active.set_title(active.title())
         return _document_response(active.document)
 
+    @app.post("/api/document/autosave")
+    def autosave(payload: DocumentPayload) -> dict[str, Any]:
+        """Persist the document in the background.
+
+        Deliberately refuses to prompt: autosave that can raise a Save As dialog
+        is worse than no autosave, because it would steal focus mid-sentence. A
+        document that has never been saved is simply reported as unsaved.
+        """
+        active = current()
+        active.document.set_content(payload.html)
+        if payload.title is not None:
+            active.document.rename(payload.title)
+        if active.document.path is None:
+            return {"status": "unsaved", "reason": "the document has no file yet"}
+        try:
+            target = active.document.save()
+        except DocumentError as exc:
+            raise HTTPException(HTTP_INTERNAL_ERROR, str(exc)) from exc
+        return {
+            "status": "saved",
+            "path": str(target),
+            "document": active.document.summary(),
+        }
+
+    @app.get("/api/document/conflict")
+    def conflict() -> dict[str, Any]:
+        """Report whether the file changed underneath the editor."""
+        found = current().document.check_conflict()
+        if found is None:
+            return {"status": "clear"}
+        return {"status": "conflict", **found.to_dict()}
+
+    @app.post("/api/document/accept-disk")
+    def accept_disk() -> dict[str, Any]:
+        """Treat the file on disk as authoritative and reload it.
+
+        The resolution when a conflict is reported and the user decides the other
+        version is the one to keep.
+        """
+        active = current()
+        path = active.document.path
+        if path is None:
+            raise HTTPException(HTTP_NOT_FOUND, "no document is open")
+        try:
+            active.document = Document.load(path)
+        except DocumentFormatError as exc:
+            raise HTTPException(HTTP_UNPROCESSABLE, str(exc)) from exc
+        except DocumentError as exc:
+            raise HTTPException(HTTP_INTERNAL_ERROR, str(exc)) from exc
+        active.set_title(active.title())
+        return {"status": "reloaded", **_document_response(active.document)}
+
     @app.post("/api/document/open")
     def open_document() -> dict[str, Any]:
         """Prompt for a file and load it.

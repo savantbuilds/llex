@@ -325,3 +325,92 @@ class _FakeWindow:
 
 def _attach_window(services: AppServices, *, choice: Path | None) -> None:
     services.window = _FakeWindow(choice)
+
+class TestAutosave:
+    """Autosave, which did not exist: a crash lost the whole session."""
+
+    def test_writes_the_open_file(self, api_client: TestClient, services: AppServices, tmp_path: Path) -> None:
+        services.document.path = tmp_path / "doc.llex"
+        response = api_client.post(
+            "/api/document/autosave",
+            json={"html": SAMPLE_HTML, "title": "Autosaved"},
+        )
+        assert response.status_code == 200
+        body = response.json()
+        assert body["status"] == "saved"
+        assert Document.load(tmp_path / "doc.llex").content == SAMPLE_HTML
+
+    def test_never_raises_a_dialog(self, api_client: TestClient, services: AppServices) -> None:
+        """Autosave that can open a Save As dialog would steal focus mid-sentence,
+        so an unsaved document is reported as unsaved and left alone."""
+        services.document.path = None
+        response = api_client.post("/api/document/autosave", json={"html": SAMPLE_HTML, "title": "New"})
+        assert response.status_code == 200
+        assert response.json()["status"] == "unsaved"
+
+    def test_reports_the_document_is_clean_afterwards(self, api_client: TestClient, services: AppServices, tmp_path: Path) -> None:
+        services.document.path = tmp_path / "doc.llex"
+        api_client.post("/api/document/autosave", json={"html": SAMPLE_HTML, "title": "Clean"})
+        assert services.document.is_dirty is False
+
+    def test_is_idempotent(self, api_client: TestClient, services: AppServices, tmp_path: Path) -> None:
+        """Repeated autosaves of unchanged content must not multiply backups."""
+        services.document.path = tmp_path / "doc.llex"
+        for _ in range(4):
+            api_client.post("/api/document/autosave", json={"html": SAMPLE_HTML, "title": "Same"})
+        assert len(list(tmp_path.glob("*.bak"))) <= 1
+
+    def test_surfaces_a_write_failure(self, api_client: TestClient, services: AppServices, tmp_path: Path) -> None:
+        """A failure must be visible, not swallowed into a fake success."""
+        services.document.path = tmp_path / "missing" / "nested" / "doc.llex"
+        (tmp_path / "missing").write_text("not a directory", encoding="utf-8")
+        response = api_client.post("/api/document/autosave", json={"html": SAMPLE_HTML, "title": "Doomed"})
+        assert response.status_code == 500
+
+
+class TestConflictEndpoint:
+    """Concurrent-open detection, so the second window says something."""
+
+    def test_clear_when_nothing_changed(self, api_client: TestClient, services: AppServices, tmp_path: Path) -> None:
+        services.document.path = tmp_path / "doc.llex"
+        services.document.save()
+        assert api_client.get("/api/document/conflict").json()["status"] == "clear"
+
+    def test_reports_a_foreign_change(self, api_client: TestClient, services: AppServices, tmp_path: Path) -> None:
+        target = tmp_path / "doc.llex"
+        services.document.path = target
+        services.document.save()
+        target.write_text('{"format": 2, "title": "theirs", "content": "x"}', encoding="utf-8")
+
+        body = api_client.get("/api/document/conflict").json()
+        assert body["status"] == "conflict"
+        assert body["kind"] == "modified"
+        assert "doc.llex" in body["detail"]
+
+    def test_accepting_the_disk_version_reloads(self, api_client: TestClient, services: AppServices, tmp_path: Path) -> None:
+        target = tmp_path / "doc.llex"
+        services.document.path = target
+        services.document.save()
+
+        theirs = Document()
+        theirs.set_content("<div class='page'><p>theirs</p></div>")
+        theirs.save(target)
+
+        response = api_client.post("/api/document/accept-disk")
+        assert response.status_code == 200
+        assert "theirs" in response.json()["html"]
+        assert services.document.check_conflict() is None
+
+    def test_accepting_requires_an_open_file(self, api_client: TestClient, services: AppServices) -> None:
+        services.document.path = None
+        assert api_client.post("/api/document/accept-disk").status_code == 404
+
+    def test_accepting_a_corrupt_file_reports_why(self, api_client: TestClient, services: AppServices, tmp_path: Path) -> None:
+        target = tmp_path / "doc.llex"
+        services.document.path = target
+        services.document.save()
+        target.write_text("{not json", encoding="utf-8")
+
+        response = api_client.post("/api/document/accept-disk")
+        assert response.status_code == 422
+        assert "detail" in response.json()

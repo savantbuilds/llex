@@ -27,7 +27,7 @@ export function createFileOperations(editor, options) {
   function handle(label, task) {
     const element = document.getElementById(label);
     return async () => {
-      busyLabel(element, true, 'Workingâ€¦');
+      busyLabel(element, true, 'Working…');
       try {
         return await task();
       } finally {

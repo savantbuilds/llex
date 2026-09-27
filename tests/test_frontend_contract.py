@@ -52,6 +52,7 @@ _MENU_ITEMS = [
     "menu-paste",
     "menu-select-all",
     "menu-find",
+    "menu-replace",
     "menu-zoom-in",
     "menu-zoom-out",
     "menu-zoom-reset",
@@ -106,6 +107,23 @@ _SETTINGS_CONTROLS = [
     "theme-text",
     "theme-ribbon",
     "theme-border",
+]
+
+# The find bar was the one control set with no contract test, which is how it
+# shipped with a panel the script never actually built.
+_FIND_CONTROLS = [
+    "find-panel",
+    "find-query",
+    "find-replace",
+    "find-previous",
+    "find-next",
+    "find-replace-one",
+    "find-replace-all",
+    "find-count",
+    "find-close",
+    "find-case",
+    "find-whole-word",
+    "find-regex",
 ]
 
 
@@ -216,6 +234,13 @@ class TestNoDeadControls:
 
     @pytest.mark.parametrize("element_id", _RIBBON_BUTTONS)
     def test_ribbon_controls_are_wired(self, element_id: str, template_ids: set[str], script: str) -> None:
+        assert element_id in template_ids, f"{element_id} is missing from the template"
+        assert element_id in script, f"{element_id} has no handler"
+
+    @pytest.mark.parametrize("element_id", _FIND_CONTROLS)
+    def test_find_controls_are_wired(self, element_id: str, template_ids: set[str], script: str) -> None:
+        """The find bar shipped as a stub; without a contract test nothing would
+        have noticed that its controls were never built."""
         assert element_id in template_ids, f"{element_id} is missing from the template"
         assert element_id in script, f"{element_id} has no handler"
 

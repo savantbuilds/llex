@@ -23,6 +23,7 @@ opaque except when a structured view is needed (see :mod:`llex.markup`).
 from __future__ import annotations
 
 import contextlib
+import hashlib
 import json
 import os
 import tempfile
@@ -51,6 +52,13 @@ FORMAT_VERSION: Final = 2
 #: The HTML a brand-new document starts with. Matches the editor's own default
 #: so a freshly opened window and a freshly created file look identical.
 DEFAULT_CONTENT: Final = '<div class="page"><p></p></div>'
+
+#: The container suffix, and the one appended to rotated backups.
+CONTAINER_SUFFIX: Final = ".llex"
+BACKUP_SUFFIX: Final = ".bak"
+
+#: How many previous versions to keep beside a document.
+MAX_BACKUPS: Final = 5
 
 #: Legacy key from FORMAT_VERSION 1, still read for backwards compatibility.
 _LEGACY_CONTENT_KEY: Final = "html_content"
@@ -247,6 +255,53 @@ def _default_styles() -> dict[str, StyleDefinition]:
 # --------------------------------------------------------------------------- #
 
 
+@dataclass(frozen=True, slots=True)
+class DiskState:
+    """A snapshot of what a document file currently holds.
+
+    Used to notice a document being changed underneath us by another process.
+    """
+
+    path: Path | None
+    exists: bool
+    size: int
+    modified_at: float
+    digest: str
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "path": str(self.path) if self.path else None,
+            "exists": self.exists,
+            "size": self.size,
+            "digest": self.digest,
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class DocumentConflict:
+    """The file changed outside this editor since it was last read or written."""
+
+    path: Path | None
+    kind: str
+    detail: str
+
+    def to_dict(self) -> dict[str, Any]:
+        return {"path": str(self.path) if self.path else None, "kind": self.kind, "detail": self.detail}
+
+
+def _digest_of(path: Path) -> str:
+    """A content digest of a file, or ``""`` if it cannot be read.
+
+    Compared instead of the modification time: autosave rewrites the file often
+    with identical content, and a timestamp comparison would report a conflict
+    on every save, which would quickly teach the user to ignore the warning.
+    """
+    try:
+        return hashlib.sha256(path.read_bytes()).hexdigest()
+    except OSError:
+        return ""
+
+
 @dataclass(slots=True)
 class Document:
     """The logical document model and metadata."""
@@ -262,6 +317,8 @@ class Document:
     #: Snapshot of the last persisted state, used to answer "is this dirty?".
     _saved_content: str = field(default="", repr=False, compare=False)
     _saved_title: str = field(default="", repr=False, compare=False)
+    #: Disk contents as of the last read or write, for conflict detection.
+    _disk: DiskState = field(default_factory=lambda: DiskState(None, False, 0, 0.0, ""), repr=False, compare=False)
 
     def __post_init__(self) -> None:
         if not self.styles:
@@ -350,6 +407,76 @@ class Document:
             "modified_at": self.modified_at.isoformat(),
         }
 
+    # -- External modification --------------------------------------------- #
+
+    def on_disk_state(self) -> DiskState:
+        """What the file on disk currently holds, for conflict detection.
+
+        Read fresh on every call rather than cached, because the point is to
+        notice a change made by another process since this document was last
+        written or read.
+        """
+        if self.path is None:
+            return DiskState(path=None, exists=False, size=0, modified_at=0.0, digest="")
+
+        try:
+            stat = self.path.stat()
+        except OSError:
+            return DiskState(path=self.path, exists=False, size=0, modified_at=0.0, digest="")
+
+        return DiskState(
+            path=self.path,
+            exists=True,
+            size=stat.st_size,
+            modified_at=stat.st_mtime,
+            digest=_digest_of(self.path),
+        )
+
+    @property
+    def last_known_disk(self) -> DiskState:
+        """The disk state as of the last read or write by this document."""
+        return self._disk
+
+    def note_disk_state(self) -> DiskState:
+        """Record the current disk state as the new baseline.
+
+        Called after every successful load and save, so the next conflict check
+        compares against the right thing.
+        """
+        self._disk = self.on_disk_state()
+        return self._disk
+
+    def check_conflict(self) -> DocumentConflict | None:
+        """Report whether the file changed underneath us, or ``None`` if it did not.
+
+        The comparison is by content digest rather than timestamp: a timestamp
+        changes on a save that wrote identical content, which is common with
+        autosave, and reporting that as a conflict would train the user to
+        ignore the warning.
+        """
+        if self.path is None:
+            return None
+        current = self.on_disk_state()
+        baseline = self._disk
+        if current.digest == baseline.digest:
+            return None
+        if not current.exists and baseline.exists:
+            return DocumentConflict(
+                path=self.path,
+                kind="deleted",
+                detail=f"{self.path.name} was deleted by something else.",
+            )
+        if not current.exists:
+            return None
+        return DocumentConflict(
+            path=self.path,
+            kind="modified",
+            detail=(
+                f"{self.path.name} was changed by something else since you opened it. "
+                "Saving will overwrite those changes."
+            ),
+        )
+
     # -- Serialisation ----------------------------------------------------- #
 
     def to_dict(self) -> dict[str, Any]:
@@ -411,18 +538,35 @@ class Document:
 
     # -- Persistence ------------------------------------------------------- #
 
-    def save(self, path: Path | str | None = None) -> Path:
+    def save(
+        self,
+        path: Path | str | None = None,
+        *,
+        backup: bool = True,
+        max_backups: int = MAX_BACKUPS,
+    ) -> Path:
         """Write the document to ``path`` (or its current path) atomically.
 
         The payload is written to a temporary file in the destination directory
         and then moved into place, so an interrupted save can never leave a
         half-written document where a valid one used to be.
+
+        Before the new content replaces it, the previous version is rotated into
+        a numbered backup. Atomic writes protect against a torn write; they do
+        not protect against writing the *wrong* content, and a word processor
+        that silently overwrites a user's file with something mangled needs a way
+        back.
+
+        Args:
+            path: Destination. Defaults to the document's current path.
+            backup: Whether to rotate the previous version into a backup first.
+            max_backups: How many rotated versions to keep beside the document.
         """
         target = Path(path) if path is not None else self.path
         if target is None:
             raise DocumentError("no path given and the document has never been saved")
-        if target.suffix.lower() != ".llex":
-            target = target.with_suffix(".llex")
+        if target.suffix.lower() != CONTAINER_SUFFIX:
+            target = target.with_suffix(CONTAINER_SUFFIX)
         target = target.expanduser()
 
         self.touch()
@@ -430,6 +574,8 @@ class Document:
 
         try:
             target.parent.mkdir(exist_ok=True, parents=True)
+            if backup and target.is_file() and not self._matches_disk(target):
+                self._rotate_backup(target, max_backups)
             handle, temp_name = tempfile.mkstemp(
                 dir=target.parent, prefix=f".{target.name}.", suffix=".tmp"
             )
@@ -447,7 +593,56 @@ class Document:
 
         self.path = target
         self.mark_clean()
+        self.note_disk_state()
         return target
+
+    def _matches_disk(self, target: Path) -> bool:
+        """Whether the file already on disk holds this content and title.
+
+        Autosave runs on a timer, so most of its writes are no-ops. Rotating a
+        backup for each one would fill the directory with identical copies and
+        bury the few versions that are actually different -- the exact history the
+        backups exist to preserve. Compared on content rather than on the raw
+        bytes, because every write advances ``modified_at`` and so the bytes are
+        never identical even when nothing the user can see has changed.
+        """
+        try:
+            existing = json.loads(target.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return False
+        if not isinstance(existing, dict):
+            return False
+        content = existing.get("content", existing.get(_LEGACY_CONTENT_KEY))
+        return existing.get("title") == self.title and content == self.content
+
+    def _rotate_backup(self, target: Path, max_backups: int) -> None:
+        """Shift ``name.1.llex.bak`` .. ``name.N.llex.bak`` along, keeping the newest.
+
+        Numbered rather than timestamped so the set stays bounded and the newest
+        is always ``.1``. Older entries past ``max_backups`` are removed, which
+        is why this is more than a copy.
+        """
+        if max_backups < 1:
+            return
+        stem = target.stem
+        suffix = target.suffix
+
+        # Drop the oldest, then shift each remaining entry down by one.
+        oldest = target.with_name(f"{stem}.{max_backups}{suffix}{BACKUP_SUFFIX}")
+        with contextlib.suppress(OSError):
+            oldest.unlink()
+
+        for index in range(max_backups - 1, 0, -1):
+            source = target.with_name(f"{stem}.{index}{suffix}{BACKUP_SUFFIX}")
+            if not source.is_file():
+                continue
+            destination = target.with_name(f"{stem}.{index + 1}{suffix}{BACKUP_SUFFIX}")
+            with contextlib.suppress(OSError):
+                os.replace(source, destination)
+
+        first = target.with_name(f"{stem}.1{suffix}{BACKUP_SUFFIX}")
+        with contextlib.suppress(OSError):
+            os.replace(target, first)
 
     @classmethod
     def load(cls, path: Path | str) -> Document:
@@ -469,4 +664,5 @@ class Document:
 
         document = cls.from_dict(data)
         document.path = target
+        document.note_disk_state()
         return document

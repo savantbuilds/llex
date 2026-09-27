@@ -101,6 +101,11 @@ export const api = {
   setContent: (html, title) =>
     request('/api/document/content', { method: 'PUT', body: { html, title } }),
 
+  autosave: (html, title) =>
+    request('/api/document/autosave', { method: 'POST', body: { html, title } }),
+  conflict: () => request('/api/document/conflict'),
+  acceptDisk: () => request('/api/document/accept-disk', { method: 'POST' }),
+
   exportDocument: (html, format) =>
     request('/api/export', { method: 'POST', body: { html, format } }),
 

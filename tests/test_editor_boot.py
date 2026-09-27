@@ -233,8 +233,64 @@ window.AbortController = AbortController;
     return out;
   })();
 
-  process.stdout.write('__RESULT__' + JSON.stringify(result));
-})().catch((e) => {
+  // Autosave, without waiting for the real four-second timer: drive the same
+  // code path the timer does and check it asks the API and stops claiming the
+  // document is dirty.
+  result.autosaveCheck = (function () {
+    if (!window.llex || !window.llex.autosave) return { skipped: true };
+    var autosave = window.llex.autosave;
+    var out = {};
+
+    // Replace the transport so the check observes the call without a server.
+    var calls = [];
+    var originalApi = autosave.api;
+    autosave.api = {
+      autosave: function (html, title) {
+        calls.push({ html: html, title: title });
+        return Promise.resolve({ status: 'saved', document: { file_name: 'doc.llex' } });
+      },
+      conflict: function () { return Promise.resolve({ status: 'clear' }); },
+    };
+
+    window.llex.state.dirty = true;
+    window.llex.state.fileName = 'doc.llex';
+    window.llex.state.title = 'Autosave probe';
+
+    return autosave.tick().then(function (response) {
+      out.calledOnce = calls.length === 1;
+      out.sentTitle = calls.length ? calls[0].title : null;
+      // The find probe above replaced "test" with "replaced", so that is the
+      // current content: if autosave sent a stale copy this would miss it.
+      out.sentCurrentContent = calls.length ? calls[0].html.indexOf('replaced') !== -1 : false;
+      out.status = response ? response.status : null;
+      out.dirtyCleared = window.llex.state.dirty === false;
+
+      // A clean document must not be rewritten over and over.
+      return autosave.tick().then(function (second) {
+        out.skippedWhenClean = second === null;
+        out.totalCalls = calls.length;
+
+        // A clean document is not probed for conflicts either.
+        window.llex.state.fileName = null;
+        return autosave.checkConflict().then(function (probe) {
+          out.noProbeWithoutAFile = probe === null;
+          autosave.api = originalApi;
+          return out;
+        });
+      });
+    });
+  })();
+
+  Promise.resolve(result.autosaveCheck)
+    .catch(function (e) { return { threw: String(e && e.stack || e) }; })
+    .then(function (settled) {
+      result.autosaveCheck = settled;
+      // The autosave timers keep the event loop alive, exactly as they do for the
+      // real window; stop them so the harness can exit.
+      if (window.llex && window.llex.autosave) window.llex.autosave.stop();
+      process.stdout.write('__RESULT__' + JSON.stringify(result));
+    });
+  })().catch((e) => {
   process.stdout.write('__RESULT__' + JSON.stringify({ errors: ['harness: ' + (e.stack || e)] }));
 });
 """
@@ -421,6 +477,45 @@ class TestTokenHandshake:
 def find_result(boot_result: dict[str, object]) -> dict[str, object]:
     """The find-and-replace probe's report from the single boot."""
     return dict(boot_result.get("findCheck") or {})
+
+
+@pytest.fixture(scope="module")
+def autosave_result(boot_result: dict[str, object]) -> dict[str, object]:
+    """The autosave probe's report from the single boot."""
+    return dict(boot_result.get("autosaveCheck") or {})
+
+
+class TestAutosave:
+    """Autosave, crash recovery and conflict detection, driven through the real app.
+
+    Before this the editor had no autosave at all: closing the window lost the
+    whole session, and a second window on the same file silently won.
+    """
+
+    def test_the_controller_was_created(self, autosave_result: dict[str, object]) -> None:
+        assert autosave_result, "no autosave controller was reported"
+        assert autosave_result.get("skipped") is not True
+        assert "threw" not in autosave_result, autosave_result.get("threw")
+
+    def test_a_dirty_document_is_written(self, autosave_result: dict[str, object]) -> None:
+        assert autosave_result.get("calledOnce") is True
+        assert autosave_result.get("status") == "saved"
+
+    def test_the_current_content_and_title_are_sent(self, autosave_result: dict[str, object]) -> None:
+        """Autosaving a stale copy would defeat the purpose."""
+        assert autosave_result.get("sentTitle") == "Autosave probe"
+        assert autosave_result.get("sentCurrentContent") is True
+
+    def test_saving_clears_the_dirty_flag(self, autosave_result: dict[str, object]) -> None:
+        assert autosave_result.get("dirtyCleared") is True
+
+    def test_a_clean_document_is_not_rewritten(self, autosave_result: dict[str, object]) -> None:
+        """Otherwise a quiet document would be written to disk forever."""
+        assert autosave_result.get("skippedWhenClean") is True
+        assert autosave_result.get("totalCalls") == 1
+
+    def test_a_document_with_no_file_is_not_probed(self, autosave_result: dict[str, object]) -> None:
+        assert autosave_result.get("noProbeWithoutAFile") is True
 
 
 class TestFindAndReplace:

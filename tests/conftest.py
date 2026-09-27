@@ -99,3 +99,15 @@ def client(app: Any) -> Iterator[TestClient]:
 @pytest.fixture
 def auth(token: str) -> dict[str, str]:
     return {API_TOKEN_HEADER: token}
+
+
+@pytest.fixture
+def api_client(app: Any, auth: dict[str, str]) -> Iterator[TestClient]:
+    """A client that already carries the token.
+
+    Every endpoint requires it, and the security tests deliberately omit it, so
+    the ordinary tests use this rather than repeating a header per call. It still
+    shares the app's services, so a test can reach in and set up state.
+    """
+    with TestClient(app, base_url="http://127.0.0.1:8765", headers=auth) as test_client:
+        yield test_client

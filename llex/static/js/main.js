@@ -26,6 +26,7 @@ import { createAssistant } from './assistant.js';
 import { runScaffolds, collectScaffolds } from './scaffolds.js';
 import { createFind } from './findbar.js';
 import { findPlugin } from './find.js';
+import { createAutosave } from './autosave.js';
 import { createFileOperations } from './fileops.js';
 import { createSettings } from './settings.js';
 import { createMenus } from './menus.js';
@@ -278,6 +279,21 @@ async function boot() {
     event.returnValue = '';
   });
 
+  // -- Autosave and conflict detection ------------------------------------- //
+
+  const autosave = createAutosave({
+    editor,
+    api,
+    state,
+    status,
+    onConflict: () => {
+      // Watch again after the user resolves the conflict; until then, saving
+      // would keep racing whatever is writing the file.
+      window.setTimeout(() => autosave.start(), 1000);
+    },
+  });
+  autosave.start();
+
   // -- Scaffolds ---------------------------------------------------------- //
 
   const executeButton = byId('btn-execute-scaffolds');
@@ -292,7 +308,7 @@ async function boot() {
         return;
       }
       executeButton.disabled = true;
-      executeButton.textContent = 'RunningÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¦';
+      executeButton.textContent = 'Running…';
       try {
         const { total, applied, failures } = await runScaffolds(editor, {
           run: (scaffolds) => api.runScaffolds(scaffolds),
@@ -375,7 +391,7 @@ async function boot() {
   window.setTimeout(() => paginator.apply(), 400);
 
   // Exposed deliberately, for debugging from the webview console.
-  window.llex = { editor, paginator, api, menus, settings, files, assistant, contextMenu, find, state };
+  window.llex = { editor, paginator, api, menus, settings, files, assistant, contextMenu, find, autosave, state };
 }
 
 function start() {

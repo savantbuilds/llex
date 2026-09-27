@@ -11,6 +11,7 @@ import pytest
 from llex.document import (
     DEFAULT_CONTENT,
     FORMAT_VERSION,
+    MAX_BACKUPS,
     Document,
     DocumentError,
     DocumentFormatError,
@@ -300,3 +301,168 @@ class TestSummary:
         document = Document()
         document.save(tmp_path / "doc.llex")
         assert document.summary()["file_name"] == "doc.llex"
+
+class TestBackups:
+    """Rotating backups, so a save cannot be the only copy of the work."""
+
+    def test_the_first_save_leaves_no_backup(self, tmp_path: Path) -> None:
+        """There is no previous version to preserve, and inventing an empty one
+        would be worse than nothing: it would look like a recoverable document."""
+        target = tmp_path / "doc.llex"
+        Document().save(target)
+        assert list(tmp_path.glob("*.bak")) == []
+
+    def test_a_second_save_rotates_the_first(self, tmp_path: Path) -> None:
+        target = tmp_path / "doc.llex"
+        first = Document()
+        first.save(target)
+        original = first.content
+        first.set_content("<div class='page'><p>second</p></div>")
+        first.save(target)
+
+        backup = tmp_path / "doc.1.llex.bak"
+        assert backup.is_file()
+        assert Document.load(backup).content == original
+
+    def test_backups_are_numbered_newest_first(self, tmp_path: Path) -> None:
+        target = tmp_path / "doc.llex"
+        versions = []
+        for version in range(3):
+            document = Document.load(target) if target.is_file() else Document()
+            document.set_content(f"<div class='page'><p>version {version}</p></div>")
+            document.save(target)
+            versions.append(document.content)
+
+        newest = Document.load(tmp_path / "doc.1.llex.bak").content
+        previous = Document.load(tmp_path / "doc.2.llex.bak").content
+        assert newest == versions[1]
+        assert previous == versions[0]
+
+    def test_the_rotation_is_bounded(self, tmp_path: Path) -> None:
+        """Unbounded backups fill a disk without ever helping."""
+        target = tmp_path / "doc.llex"
+        for version in range(MAX_BACKUPS + 4):
+            document = Document.load(target) if target.is_file() else Document()
+            document.set_content(f"<div class='page'><p>version {version}</p></div>")
+            document.save(target)
+
+        assert len(list(tmp_path.glob("*.bak"))) == MAX_BACKUPS
+
+    def test_backups_can_be_switched_off(self, tmp_path: Path) -> None:
+        target = tmp_path / "doc.llex"
+        document = Document()
+        document.save(target)
+        document.save(target, backup=False)
+        assert list(tmp_path.glob("*.bak")) == []
+
+    def test_resaving_unchanged_content_makes_no_backup(self, tmp_path: Path) -> None:
+        """Autosave runs on a timer, so most writes are no-ops. Rotating for each
+        one would bury the few versions that actually differ."""
+        target = tmp_path / "doc.llex"
+        document = Document()
+        document.save(target)
+        for _ in range(6):
+            document.save(target)
+        assert list(tmp_path.glob("*.bak")) == []
+
+    def test_resaving_unchanged_content_does_not_bury_real_versions(self, tmp_path: Path) -> None:
+        target = tmp_path / "doc.llex"
+        document = Document()
+        document.save(target)
+        for version in range(3):
+            document.set_content(f"<div class='page'><p>version {version}</p></div>")
+            document.save(target)
+            for _ in range(3):  # autosave of an unchanged document
+                document.save(target)
+
+        # Three genuinely different versions, and not the dozen a naive
+        # rotate-on-every-write would have left.
+        backups = sorted(path.name for path in tmp_path.glob("*.bak"))
+        assert backups == ["doc.1.llex.bak", "doc.2.llex.bak", "doc.3.llex.bak"]
+        assert Document.load(tmp_path / "doc.1.llex.bak").content.endswith("version 1</p></div>")
+
+    def test_a_saved_file_is_still_readable(self, tmp_path: Path) -> None:
+        """The backup must not be the only valid file after a rotation."""
+        target = tmp_path / "doc.llex"
+        for version in range(4):
+            document = Document.load(target) if target.is_file() else Document()
+            document.set_content(f"<div class='page'><p>version {version}</p></div>")
+            document.save(target)
+
+        assert "version 3" in Document.load(target).content
+
+    def test_no_temporary_files_are_left_behind(self, tmp_path: Path) -> None:
+        """A failed write must not litter the directory the user will look in."""
+        target = tmp_path / "doc.llex"
+        document = Document()
+        document.save(target)
+        document.set_content("<div class='page'><p>second</p></div>")
+        document.save(target)
+        assert list(tmp_path.glob(".*.tmp")) == []
+
+
+class TestConcurrentModification:
+    """Noticing that the file changed underneath us.
+
+    Two windows on one file used to mean last-writer-wins with no warning, so the
+    losing window's work was discarded silently.
+    """
+
+    def test_no_conflict_when_nothing_else_touched_the_file(self, tmp_path: Path) -> None:
+        document = Document()
+        document.save(tmp_path / "doc.llex")
+        assert document.check_conflict() is None
+
+    def test_no_conflict_after_our_own_save(self, tmp_path: Path) -> None:
+        """Autosave rewrites the file constantly, and a false warning on every
+        save would train the user to ignore it."""
+        target = tmp_path / "doc.llex"
+        document = Document()
+        document.save(target)
+        for _ in range(3):
+            document.set_content(f"<div class='page'><p>{document.title}</p></div>")
+            document.save(target)
+            assert document.check_conflict() is None
+
+    def test_a_foreign_change_is_reported(self, tmp_path: Path) -> None:
+        target = tmp_path / "doc.llex"
+        document = Document()
+        document.save(target)
+
+        target.write_text('{"format": 2, "title": "theirs", "content": "x"}', encoding="utf-8")
+        found = document.check_conflict()
+        assert found is not None
+        assert found.kind == "modified"
+        assert "doc.llex" in found.detail
+
+    def test_identical_content_is_not_a_conflict(self, tmp_path: Path) -> None:
+        """A rewrite of the same bytes is not a conflict, even though the
+        timestamp moved."""
+        target = tmp_path / "doc.llex"
+        document = Document()
+        document.save(target)
+        payload = target.read_text(encoding="utf-8")
+        target.write_text(payload, encoding="utf-8")
+        assert document.check_conflict() is None
+
+    def test_deletion_is_reported_separately(self, tmp_path: Path) -> None:
+        target = tmp_path / "doc.llex"
+        document = Document()
+        document.save(target)
+        target.unlink()
+        found = document.check_conflict()
+        assert found is not None
+        assert found.kind == "deleted"
+
+    def test_an_unsaved_document_never_conflicts(self) -> None:
+        assert Document().check_conflict() is None
+
+    def test_the_baseline_moves_with_our_writes(self, tmp_path: Path) -> None:
+        target = tmp_path / "doc.llex"
+        document = Document()
+        document.save(target)
+        # A foreign change, then our own save adopting it as the baseline.
+        target.write_text('{"format": 2, "title": "theirs", "content": "x"}', encoding="utf-8")
+        assert document.check_conflict() is not None
+        document.note_disk_state()
+        assert document.check_conflict() is None
