@@ -44,6 +44,7 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, field_validator
 
+from . import __version__
 from .document import Document, DocumentError, DocumentFormatError, DocumentNotFoundError
 from .export import SUPPORTED_FORMATS, Exporter, ExportError
 from .llm import (
@@ -254,7 +255,7 @@ def build_app(services: AppServices | None = None) -> FastAPI:
 
     app = FastAPI(
         title="LLex",
-        version="0.2.0",
+        version=__version__,
         description="Local document API for the LLex editor.",
         lifespan=lifespan,
         # The API is single-user and token-guarded; a browsable schema is noise.
