@@ -26,6 +26,32 @@
  * the document positions wrong does not throw, it silently corrupts a
  * document, so the arithmetic is derived from first principles in one place and
  * checked against real ProseMirror documents in the test suite.
+ *
+ * ## What this model can and cannot do about widows and orphans
+ *
+ * Word processors offer "widow/orphan control": never leave a single line of a
+ * paragraph alone at the bottom of a page, never start a page with the last
+ * line of a paragraph. That is a *line*-level rule, and it cannot be expressed
+ * here, because this model only ever moves whole blocks between pages -- a
+ * paragraph is entirely on one page or entirely on the next, so it can never
+ * have a widow or an orphan in the first place. Implementing it properly would
+ * mean letting a page break fall *inside* a paragraph, which changes the
+ * document's node structure rather than only its layout, and is a much larger
+ * change than a pagination tweak.
+ *
+ * The block-level consequences of the same concern are handled, and are what
+ * actually go wrong in practice:
+ *
+ *  - {@link countKeepWithNextTail} stops a heading being stranded at the bottom
+ *    of a page, separated from the text it introduces.
+ *  - A page that cannot be split without leaving fewer than
+ *    {@link MIN_SPLITTABLE_CHILDREN} blocks behind grows instead, so a page is
+ *    never left nearly blank.
+ *  - A single block too tall for any page is allowed to overflow visibly rather
+ *    than being clipped into invisibility.
+ *
+ * A page holding nothing but one trailing block is a legitimate result here: it
+ * is a genuine page break, not a stranded line.
  */
 
 /**
@@ -58,6 +84,82 @@ export const OVERFLOW_TOLERANCE = 1;
 
 /** Below this many blocks a page cannot usefully be split. */
 export const MIN_SPLITTABLE_CHILDREN = 2;
+
+/**
+ * Whether a block must be followed by content on the same page.
+ *
+ * A heading stranded as the last thing on a page is separated from the text it
+ * introduces, which is the most common way a paginated document reads as broken.
+ *
+ * @param {import('@tiptap/pm/model').Node} node
+ * @returns {boolean}
+ */
+export function keepsWithNext(node) {
+  const spec = node.type.spec;
+  if (!spec || !spec.attrs || !('keepWithNext' in spec.attrs)) return false;
+  return node.attrs.keepWithNext !== false;
+}
+
+/**
+ * How many trailing blocks must leave a page to honour keep-with-next.
+ *
+ * Separate from {@link countOverflowingTail} because it applies to pages that
+ * do not overflow at all: a page can fit its content perfectly and still end
+ * with a stranded heading, and an overflow-driven reflow would never look at it.
+ *
+ * One block is enough to fix it. A run of consecutive headings is resolved by
+ * moving the last one, because whatever it lands on -- the moved heading, or the
+ * next page's existing first block -- is content that follows it.
+ *
+ * @param {import('@tiptap/pm/model').Node} doc
+ * @param {number} pageIndex
+ * @returns {number} Blocks to move, or 0 when the page may end where it does.
+ */
+export function countKeepWithNextTail(doc, pageIndex) {
+  // `Node.child` throws for an out-of-range index rather than returning null, and
+  // a caller holding a stale page index must get an answer rather than a crash
+  // in the middle of a reflow.
+  if (pageIndex < 0 || pageIndex >= doc.childCount) return 0;
+  const page = doc.child(pageIndex);
+  if (!page) return 0;
+  const last = page.lastChild;
+  if (!last || !keepsWithNext(last)) return 0;
+  // Nothing follows it in the document, so there is nothing to keep it with.
+  // Moving it would only manufacture an empty final page.
+  if (pageIndex >= doc.childCount - 1) return 0;
+  // Moving everything would leave a blank page behind.
+  if (page.childCount < MIN_SPLITTABLE_CHILDREN) return 0;
+  return 1;
+}
+
+/**
+ * Plan the move that stops a page ending in a stranded heading.
+ *
+ * Deliberately not {@link planPage}: that refuses to leave fewer than
+ * {@link MIN_SPLITTABLE_CHILDREN} blocks behind, which is right for an overflow
+ * split -- a page left with one block grows instead -- but wrong here. Removing
+ * a heading from `[body, heading]` leaves `[body]`, an entirely ordinary page,
+ * and the alternative is a heading stranded at the bottom of a page that fits.
+ *
+ * @param {import('@tiptap/pm/model').Node} doc
+ * @param {number} pageIndex
+ * @param {ReadonlySet<number>} pinned
+ * @returns {ReflowPlan|null}
+ */
+export function planKeepWithNext(doc, pageIndex, pinned) {
+  if (pinned.has(pageIndex)) return null;
+  const count = countKeepWithNextTail(doc, pageIndex);
+  if (count <= 0) return null;
+  const info = describePages(doc)[pageIndex];
+  return {
+    kind: 'move',
+    pageIndex,
+    from: startOfTrailingRun(info, count),
+    to: info.lastChildStart + info.lastChildSize,
+    count,
+    targetIndex: pageIndex + 1,
+  };
+}
 
 /**
  * Describe every page in `doc`, with the document positions needed to move

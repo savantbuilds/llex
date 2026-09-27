@@ -14,13 +14,18 @@ import assert from 'node:assert/strict';
 import { Schema } from '@tiptap/pm/model';
 import { EditorState } from '@tiptap/pm/state';
 
+import { reflowTransaction } from '../../llex/static/js/paginator.js';
+
 import {
   MIN_SPLITTABLE_CHILDREN,
   OVERFLOW_TOLERANCE,
   applyReflow,
   collapseToSinglePage,
+  countKeepWithNextTail,
   countOverflowingTail,
   describePages,
+  keepsWithNext,
+  planKeepWithNext,
   planPage,
   startOfTrailingRun,
 } from '../../llex/static/js/pagination.js';
@@ -70,6 +75,25 @@ function buildState(doc) {
 /** `Node.check()` throws on a structurally invalid document. */
 function assertValid(doc, message) {
   assert.doesNotThrow(() => doc.check(), message);
+}
+
+/**
+ * Build a document from block descriptors, so a test can use headings.
+ *
+ * @param {Array<Array<{text: string, type?: string, attrs?: object}|string>>} pages
+ */
+function buildTypedDoc(pages) {
+  const children = pages.map((blocks) =>
+    schema.nodes.page.create(
+      null,
+      blocks.map((block) => {
+        const spec = typeof block === 'string' ? { text: block } : block;
+        const type = schema.nodes[spec.type || 'paragraph'];
+        return type.create(spec.attrs || null, spec.text ? schema.text(spec.text) : null);
+      }),
+    ),
+  );
+  return schema.nodes.doc.create(null, children);
 }
 
 /** Page-separated plain text, so document shape is easy to assert on. */
@@ -396,4 +420,239 @@ test('a collapsed document can be re-expanded by the paginator', () => {
 test('OVERFLOW_TOLERANCE is a small positive number', () => {
   assert.equal(typeof OVERFLOW_TOLERANCE, 'number');
   assert.ok(OVERFLOW_TOLERANCE > 0 && OVERFLOW_TOLERANCE <= 2);
+});
+
+// --------------------------------------------------------------------------
+// Keep with next
+//
+// A heading stranded as the last thing on a page is the most common way a
+// paginated document reads as broken, and it is a defect the overflow pass
+// cannot see: the page may fit its content perfectly and still strand one.
+// --------------------------------------------------------------------------
+
+test('keepsWithNext is true for a heading and false for a paragraph', () => {
+  const doc = buildTypedDoc([[{ type: 'heading', text: 'H' }, { text: 'body' }]]);
+  assert.equal(keepsWithNext(doc.child(0).child(0)), true);
+  assert.equal(keepsWithNext(doc.child(0).child(1)), false);
+});
+
+test('keepsWithNext honours an explicit opt-out', () => {
+  const doc = buildTypedDoc([
+    [{ type: 'heading', text: 'H', attrs: { level: 1, keepWithNext: false } }, { text: 'body' }],
+  ]);
+  assert.equal(keepsWithNext(doc.child(0).child(0)), false);
+});
+
+test('a page ending in a heading must give it up', () => {
+  const doc = buildTypedDoc([
+    [{ text: 'body' }, { type: 'heading', text: 'Section' }],
+    [{ text: 'more' }],
+  ]);
+  assert.equal(countKeepWithNextTail(doc, 0), 1);
+});
+
+test('a page ending in a paragraph is left alone', () => {
+  const doc = buildTypedDoc([[{ text: 'body' }, { text: 'tail' }], [{ text: 'more' }]]);
+  assert.equal(countKeepWithNextTail(doc, 0), 0);
+});
+
+test('a heading in the middle of a page is left alone', () => {
+  const doc = buildTypedDoc([
+    [{ type: 'heading', text: 'Section' }, { text: 'body' }],
+    [{ text: 'more' }],
+  ]);
+  assert.equal(countKeepWithNextTail(doc, 0), 0);
+});
+
+test('the last page may end in a heading', () => {
+  // Nothing follows it, so there is nothing to keep it with.
+  const doc = buildTypedDoc([[{ text: 'body' }], [{ type: 'heading', text: 'End' }]]);
+  assert.equal(countKeepWithNextTail(doc, 1), 0);
+});
+
+test('a page holding only the heading is not emptied', () => {
+  const doc = buildTypedDoc([[{ type: 'heading', text: 'Only' }], [{ text: 'more' }]]);
+  assert.equal(countKeepWithNextTail(doc, 0), 0);
+});
+
+test('an out-of-range page reports nothing to move', () => {
+  const doc = buildTypedDoc([[{ text: 'body' }]]);
+  assert.equal(countKeepWithNextTail(doc, 7), 0);
+});
+
+test('the move relocates the heading without corrupting the document', () => {
+  const doc = buildTypedDoc([
+    [{ text: 'body' }, { type: 'heading', text: 'Section' }],
+    [{ text: 'more' }],
+  ]);
+  const plan = planKeepWithNext(doc, 0, new Set());
+  assert.ok(plan);
+  assert.equal(plan.kind, 'move');
+  assert.equal(plan.count, 1);
+
+  const state = buildState(doc);
+  const result = applyReflow(state, plan);
+  assert.ok(result);
+  const after = state.apply(result);
+  assert.equal(blocksOf(after.doc, 0).join('|'), 'body');
+  assert.equal(blocksOf(after.doc, 1).join('|'), 'Section|more');
+  assertValid(after.doc);
+});
+
+test('a run of consecutive headings is resolved by moving only the last', () => {
+  // Whatever the moved heading lands on is content that follows it, so one
+  // block is enough and moving the whole run would leave a gap.
+  const doc = buildTypedDoc([
+    [
+      { text: 'body' },
+      { type: 'heading', text: 'First' },
+      { type: 'heading', text: 'Second' },
+    ],
+    [{ text: 'more' }],
+  ]);
+  assert.equal(countKeepWithNextTail(doc, 0), 1);
+});
+
+test('a page pinned to grow is not asked to move its heading', () => {
+  const doc = buildTypedDoc([
+    [{ text: 'body' }, { type: 'heading', text: 'Section' }],
+    [{ text: 'more' }],
+  ]);
+  assert.equal(planKeepWithNext(doc, 0, new Set([0])), null);
+});
+test('a page holding only the heading is not emptied', () => {
+  const doc = buildTypedDoc([[{ type: 'heading', text: 'Only' }], [{ text: 'more' }]]);
+  assert.equal(countKeepWithNextTail(doc, 0), 0);
+  assert.equal(planKeepWithNext(doc, 0, new Set()), null);
+});
+
+test('moving the heading leaves a readable page, not a stranded one', () => {
+  // The decisive case for the dedicated plan: [body, heading] is two blocks, so
+  // the overflow rule's "do not leave fewer than two" would refuse to split it
+  // and grow the page instead. Leaving [body] behind is the normal outcome.
+  const doc = buildTypedDoc([
+    [{ text: 'body' }, { type: 'heading', text: 'Section' }],
+    [{ text: 'more' }],
+  ]);
+  const state = buildState(doc);
+  const result = applyReflow(state, planKeepWithNext(doc, 0, new Set()));
+  const after = state.apply(result);
+  assert.equal(blocksOf(after.doc, 0).length, 1);
+  assert.equal(blocksOf(after.doc, 0)[0], 'body');
+  assert.deepEqual(blocksOf(after.doc, 1), ['Section', 'more']);
+  assertValid(after.doc);
+});
+
+test('no page in a reflowed document ends in a stranded heading', () => {
+  // The property that matters, checked on a document with several pages.
+  let state = buildState(
+    buildTypedDoc([
+      [{ text: 'a' }, { type: 'heading', text: 'H1' }],
+      [{ text: 'b' }, { type: 'heading', text: 'H2' }],
+      [{ text: 'c' }],
+    ]),
+  );
+
+  for (let round = 0; round < 6; round += 1) {
+    // Every page each round, not just the first: a fix on one page shifts the
+    // content of the next, so a single-page pass would report a stale result.
+    let applied = false;
+    for (let index = 0; index < state.doc.childCount - 1; index += 1) {
+      const plan = planKeepWithNext(state.doc, index, new Set());
+      if (!plan) continue;
+      const step = applyReflow(state, plan);
+      if (!step) continue;
+      state = state.apply(step);
+      applied = true;
+      break;
+    }
+    if (!applied) break;
+  }
+
+  for (let index = 0; index < state.doc.childCount; index += 1) {
+    const page = state.doc.child(index);
+    const last = page.lastChild;
+    if (index < state.doc.childCount - 1 && last) {
+      assert.equal(
+        keepsWithNext(last),
+        false,
+        `page ${index} still ends in a heading: ${page.textContent}`,
+      );
+    }
+  }
+  assertValid(state.doc);
+});
+// --------------------------------------------------------------------------
+// The two passes together
+//
+// Keep-with-next has to run even when nothing overflows, which is the whole
+// reason it is a separate pass: the previous implementation returned early when
+// no page overflowed, so a page that fit perfectly while stranding a heading was
+// never examined.
+// --------------------------------------------------------------------------
+
+/**
+ * A container whose pages report whatever `overflows` says they should.
+ *
+ * @param {number} pageCount
+ * @param {{overflows?: boolean, printable?: number, blockHeight?: number}} [options]
+ */
+function fakeContainer(pageCount, options = {}) {
+  const printable = options.printable ?? 300;
+  const blockHeight = options.blockHeight ?? 100;
+  // `printableHeight` reads padding through the page's own window, so the stub
+  // needs one; zero padding keeps the arithmetic obvious.
+  const ownerDocument = {
+    defaultView: { getComputedStyle: () => ({ paddingTop: '0px', paddingBottom: '0px' }) },
+  };
+  const children = [];
+  for (let index = 0; index < pageCount; index += 1) {
+    children.push({
+      dataset: {},
+      ownerDocument,
+      scrollHeight: options.overflows ? printable + 10 : printable,
+      clientHeight: printable,
+      children: [],
+      getBoundingClientRect: () => ({ top: 0, bottom: blockHeight }),
+      querySelectorAll: () => [],
+    });
+  }
+  return { children };
+}
+
+test('a stranded heading is fixed when nothing overflows at all', () => {
+  const doc = buildTypedDoc([
+    [{ text: 'a' }, { type: 'heading', text: 'Section' }],
+    [{ text: 'b' }],
+  ]);
+  const state = buildState(doc);
+  const container = fakeContainer(2, { overflows: false });
+
+  const result = reflowTransaction(state, container, new Set());
+  assert.ok(result, 'keep-with-next must not require an overflow to act');
+  assert.equal(result.moved, 1);
+
+  const after = state.apply(result.transaction);
+  assert.deepEqual(blocksOf(after.doc, 0), ['a']);
+  assert.deepEqual(blocksOf(after.doc, 1), ['Section', 'b']);
+  assertValid(after.doc);
+});
+
+test('a document with nothing to fix produces no transaction', () => {
+  const state = buildState(buildTypedDoc([[{ text: 'a' }], [{ text: 'b' }]]));
+  assert.equal(reflowTransaction(state, fakeContainer(2, { overflows: false }), new Set()), null);
+});
+
+test('an overflowing document with a trailing heading needs only one fix', () => {
+  const doc = buildTypedDoc([
+    [{ text: 'a' }, { text: 'b' }, { type: 'heading', text: 'Section' }],
+    [{ text: 'c' }],
+  ]);
+  const state = buildState(doc);
+  const result = reflowTransaction(state, fakeContainer(2, { overflows: true }), new Set());
+  assert.ok(result);
+  const after = state.apply(result.transaction);
+  assertValid(after.doc);
+  const lastOfFirst = after.doc.child(0).lastChild;
+  assert.equal(keepsWithNext(lastOfFirst), false, 'the heading should have moved');
 });

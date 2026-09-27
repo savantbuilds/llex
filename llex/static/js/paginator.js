@@ -24,7 +24,13 @@
 
 import { Plugin, PluginKey } from '@tiptap/pm/state';
 
-import { applyReflow, collapseToSinglePage, measureOverflow, planPage } from './pagination.js';
+import {
+  applyReflow,
+  collapseToSinglePage,
+  measureOverflow,
+  planKeepWithNext,
+  planPage,
+} from './pagination.js';
 
 /** Ceiling on reflow rounds, so a pathological document cannot spin. */
 export const MAX_ROUNDS = 200;
@@ -45,7 +51,6 @@ export const paginationKey = new PluginKey('llex-pagination');
  */
 export function reflowTransaction(state, container, pinned) {
   const { overflowed, counts } = measureOverflow(container);
-  if (overflowed.size === 0) return null;
 
   let transaction = null;
   let moved = 0;
@@ -58,6 +63,20 @@ export function reflowTransaction(state, container, pinned) {
       grown.push(pageIndex);
       continue;
     }
+    const step = applyReflow(state, plan);
+    if (!step) continue;
+    transaction = transaction ? transaction.step(step) : step;
+    moved += 1;
+  }
+
+  // Keep-with-next is a second, independent pass, because it applies to pages
+  // that do not overflow: a page can fit its content exactly and still leave a
+  // heading stranded at the bottom, and the overflow pass above would never
+  // look at such a page. The last page is excluded because nothing follows it.
+  const pageCount = state.doc.childCount;
+  for (let pageIndex = 0; pageIndex < pageCount - 1; pageIndex += 1) {
+    const plan = planKeepWithNext(state.doc, pageIndex, pinned);
+    if (!plan) continue;
     const step = applyReflow(state, plan);
     if (!step) continue;
     transaction = transaction ? transaction.step(step) : step;
