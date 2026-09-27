@@ -52,6 +52,9 @@ HOST: str = "127.0.0.1"
 #: How long to wait for the server to start accepting connections.
 STARTUP_TIMEOUT: float = 15.0
 
+#: How many candidate ports to try before giving up.
+_PORT_ATTEMPTS: int = 16
+
 #: Poll interval while waiting for the server.
 _POLL_INTERVAL: float = 0.05
 
@@ -61,6 +64,54 @@ DEFAULT_HEIGHT: int = 860
 
 #: A file larger than this is probably a mistake to load into an editor.
 MAX_OPEN_BYTES: int = 64 * 1024 * 1024
+
+#: Ports the embedded Chromium/WebView2 refuses to navigate to.
+#:
+#: Asking it for one of these produces a bare ``ERR_UNSAFE_PORT`` page with no
+#: indication of what went wrong, so they are treated as unusable rather than
+#: discovered by the user. The list is Chromium's; the single-digit entries are
+#: the well-known services it refuses on principle.
+BLOCKED_PORTS: frozenset[int] = frozenset(
+    {
+        1, 7, 9, 11, 13, 15, 17, 19, 20, 21, 22, 23, 25,
+        37, 42, 43, 53, 69, 77, 79, 87, 95,
+        101, 102, 103, 104, 109, 110, 111, 113, 115, 117, 119, 123, 135,
+        137, 139, 143, 161, 179, 389, 427, 465,
+        512, 513, 514, 515, 526, 530, 531, 532, 540, 548, 554, 556, 563, 587, 601,
+        636, 989, 990, 993, 995, 1719, 1720, 1723, 2049, 3659, 4045, 5060, 5061,
+        6000, 6566, 6665, 6666, 6667, 6668, 6669, 6697, 10080,
+    }
+)
+
+#: Below this, binding needs elevated privileges on Windows and POSIX.
+PRIVILEGED_PORT_LIMIT: int = 1024
+
+#: Upper bound on a port number, from the IANA registry.
+MAX_PORT: int = 65535
+
+
+class PortUnavailableError(RuntimeError):
+    """Raised when a port cannot serve the editor's webview."""
+
+
+def describe_port_problem(host: str, port: int) -> str | None:
+    """Why ``port`` cannot be used, or ``None`` if it is fine.
+
+    Distinguishes the reasons a user needs to hear about, because "it didn't
+    work" is not actionable.
+    """
+    if not 1 <= port <= MAX_PORT:
+        return f"{port} is not a valid port number"
+    if port < PRIVILEGED_PORT_LIMIT:
+        return (
+            f"port {port} is privileged; ports below {PRIVILEGED_PORT_LIMIT} "
+            "require elevated privileges"
+        )
+    if port in BLOCKED_PORTS:
+        return f"port {port} is blocked by the embedded browser (ERR_UNSAFE_PORT)"
+    if not _is_free(host, port):
+        return f"port {port} is already in use"
+    return None
 
 
 @dataclass(frozen=True, slots=True)
@@ -150,27 +201,44 @@ def _parse_args(argv: Sequence[str] | None) -> LaunchOptions | None:
 
 
 def reserve_port(host: str, preferred: int = 0) -> int:
-    """Return a port that is free right now.
+    """Return a port the webview can actually be pointed at.
 
-    The socket is bound to find a candidate and then closed, so the port is
-    *likely* free rather than guaranteed -- but since the API validates the
-    ``Host`` header and requires a session token, a squatter would be refused
-    rather than served. Binding with ``SO_REUSEADDR`` off is deliberate: we
-    want to know if something is genuinely listening.
+    A port is only acceptable if it is bindable *and* not on the embedded
+    browser's blocked list. When ``preferred`` is unusable the reason is
+    reported rather than silently substituting a different port: a user who asked
+    for a specific port needs to be told it was refused, not left wondering why
+    the app is on some other port.
     """
     if preferred:
-        if _is_free(host, preferred):
+        problem = describe_port_problem(host, preferred)
+        if problem is None:
             return preferred
-        logger.warning("port %d is in use; choosing another", preferred)
+        raise PortUnavailableError(f"cannot use port {preferred}: {problem}")
 
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
         probe.bind((host, 0))
-        return int(probe.getsockname()[1])
+        for _ in range(_PORT_ATTEMPTS):
+            port = int(probe.getsockname()[1])
+            if port >= PRIVILEGED_PORT_LIMIT and port not in BLOCKED_PORTS:
+                return port
+            # Astronomically unlikely, but a refused port must never be
+            # returned: the webview would show a bare ERR_UNSAFE_PORT page.
+            probe.bind((host, 0))
+    raise PortUnavailableError(
+        "could not find a usable port; every candidate was blocked by the browser"
+    )
 
 
 def _is_free(host: str, port: int) -> bool:
+    """Whether ``port`` can be bound right now.
+
+    ``SO_REUSEADDR`` is deliberately *not* set. On Windows it does not mean
+    "reuse a TIME_WAIT address" as it does on POSIX -- it allows a second socket
+    to bind an address another process is already listening on. Setting it here
+    made a busy port look free, which is the exact opposite of the check's
+    purpose and let LLex open a window pointed at someone else's server.
+    """
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
-        probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         try:
             probe.bind((host, port))
         except OSError:
@@ -286,7 +354,16 @@ def run_desktop(options: LaunchOptions) -> int:
     services = AppServices(document=document)
     app = build_app(services)
 
-    port = reserve_port(options.host, options.port)
+    try:
+        port = reserve_port(options.host, options.port)
+    except PortUnavailableError as exc:
+        # Opening a window anyway would show a bare browser error page with no
+        # indication of the cause, so refuse and say why.
+        print(f"llex: {exc}", file=sys.stderr)
+        if not options.port:
+            print("llex: try again, or pass --port to choose one yourself", file=sys.stderr)
+        return 2
+
     server = _ServerThread(app, options.host, port, debug=options.debug)
     server.start()
 
