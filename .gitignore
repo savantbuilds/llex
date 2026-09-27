@@ -1,12 +1,15 @@
-# Bytecode
+# ---------------------------------------------------------------------------
+# Python
+# ---------------------------------------------------------------------------
 __pycache__/
 *.py[cod]
 *$py.class
-
-# Distribution
+*.so
+.Python
 build/
 dist/
 *.egg-info/
+.eggs/
 
 # Virtual environments
 .venv/
@@ -14,22 +17,54 @@ venv/
 env/
 myenv/
 
-# Editor directories
+# Test / type / coverage artifacts
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+.tox/
+
+# ---------------------------------------------------------------------------
+# Node / frontend build artifacts
+#
+# llex/static/editor.bundle.js is generated from llex/static/js/** by esbuild.
+# It is intentionally NOT tracked: committing an 800 kB build artifact lets the
+# shipped bundle silently drift away from its source. Run `npm ci && npm run
+# build` (see CONTRIBUTING.md) and the release workflow bundles it into the
+# published wheel.
+# ---------------------------------------------------------------------------
+node_modules/
+llex/static/editor.bundle.js
+llex/static/editor.bundle.js.map
+
+# ---------------------------------------------------------------------------
+# Editors & OS
+# ---------------------------------------------------------------------------
 .idea/
 .vscode/
+*.swp
+*~
+.DS_Store
+Thumbs.db
 
-# Environment overrides
+# ---------------------------------------------------------------------------
+# Secrets / local environment
+# ---------------------------------------------------------------------------
 .env
+.env.*
 *.env
+!.env.example
 
-# Local LLex documents
+# ---------------------------------------------------------------------------
+# LLex artifacts
+# ---------------------------------------------------------------------------
+# Documents are user data, never source. Sample fixtures live in tests/ and are
+# tracked explicitly.
 *.llex
+!tests/fixtures/*.llex
 
-
-# docs
-dev_docs/
-inspirations/
-
-
-llex/static/vendor
-node_modules/
+# Scratch prototypes and one-off codemods (historical experiment dumps)
+scratch/

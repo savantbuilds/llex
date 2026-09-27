@@ -1,28 +1,129 @@
+[build-system]
+requires = ["setuptools>=77.0.3", "wheel"]
+build-backend = "setuptools.build_meta"
+
 [project]
 name = "llex"
-version = "0.1.0"
-description = "LLex (Local Language Expression Engine) is a Python-native word processor shell that blends layout, formatting, and LLM-assisted writing cues."
+version = "0.2.0"
+description = "LLex (Local Language Expression Engine) is a local-first, paginated word processor with a pluggable local LLM assistant."
 readme = "README.md"
-license = { text = "MIT" }
-authors = [ { name = "Savant Pseudoist" } ]
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{ name = "Savant Pseudoist" }]
+keywords = ["word-processor", "editor", "tiptap", "prosemirror", "local-llm", "pywebview"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: X11 Applications :: Qt",
+    "Intended Audience :: End Users/Desktop",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Text Editors :: Word Processors",
+]
 requires-python = ">=3.10"
 dependencies = [
-    "PyQt6>=6.6.0",
+    "fastapi>=0.110",
+    "uvicorn>=0.27",
+    "pydantic>=2.6",
+    "pywebview>=5.0",
+    "odfpy>=1.4.1",
     "python-docx>=1.1.0",
-    "odfpy>=1.4.1"
+]
+
+[project.optional-dependencies]
+dev = [
+    "httpx>=0.27",
+    "mypy>=1.9",
+    "pytest>=8.0",
+    "pytest-cov>=5.0",
+    "ruff>=0.5",
 ]
 
 [project.urls]
-"Repository" = "https://github.com/savantpseudoist/llex"
-"Documentation" = "https://github.com/savantpseudoist/llex#readme"
+Repository = "https://github.com/savantpseudoist/llex"
+Issues = "https://github.com/savantpseudoist/llex/issues"
 
 [project.scripts]
 llex = "llex.main:main"
 
-[tool.setuptools.packages.find]
-where = ["llex"]
-exclude = ["tests*", "dev_docs"]
+[tool.setuptools]
+# Explicit package list: the package lives at the repository root, not under a
+# nested `llex/llex` directory. Static assets and Jinja-less templates are
+# shipped as package data so an installed wheel behaves like a source checkout.
+packages = ["llex"]
+include-package-data = true
 
-[build-system]
-requires = ["setuptools>=65.5.1", "wheel"]
-build-backend = "setuptools.build_meta"
+[tool.setuptools.package-data]
+llex = [
+    "templates/*.html",
+    "static/*.css",
+    "static/*.js",
+    "static/*.map",
+    "static/vendor/**",
+]
+
+[tool.pytest.ini_options]
+minversion = "8.0"
+testpaths = ["tests"]
+addopts = "-ra --strict-markers --strict-config"
+filterwarnings = ["error"]
+
+[tool.coverage.run]
+branch = true
+source = ["llex"]
+omit = ["llex/main.py"]
+
+[tool.coverage.report]
+show_missing = true
+skip_covered = true
+exclude_lines = [
+    "pragma: no cover",
+    "if TYPE_CHECKING:",
+    "raise NotImplementedError",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+src = ["llex", "tests"]
+
+[tool.ruff.lint]
+select = [
+    "E",   # pycodestyle errors
+    "W",   # pycodestyle warnings
+    "F",   # pyflakes
+    "I",   # isort
+    "B",   # flake8-bugbear
+    "C4",  # flake8-comprehensions
+    "UP",  # pyupgrade
+    "N",   # pep8-naming
+    "SIM", # flake8-simplify
+    "RUF", # ruff-specific
+]
+ignore = [
+    # `datetime.UTC` only exists on 3.11+, and we support 3.10.
+    "UP017",
+    # Long lines in SQL/HTML-ish string literals are unavoidable.
+    "E501",
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["S101"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["llex"]
+combine-as-imports = true
+
+[tool.mypy]
+python_version = "3.10"
+files = ["llex"]
+strict = true
+warn_unreachable = true
+pretty = true
+# pywebview and Qt-less webview backends ship without type information.
+[[tool.mypy.overrides]]
+module = ["webview.*", "uvicorn.*", "docx.*", "odf.*"]
+ignore_missing_imports = true

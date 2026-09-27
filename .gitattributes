@@ -1,0 +1,22 @@
+# Normalize line endings on checkout, keep LF in the repository.
+* text=auto eol=lf
+
+*.bat text eol=crlf
+*.cmd text eol=crlf
+*.ps1 text eol=crlf
+
+# Binary assets
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.woff binary
+*.woff2 binary
+*.ttf binary
+*.otf binary
+*.pdf binary
+*.zip binary
+
+# Vendored third-party JavaScript is checked in verbatim.
+llex/static/vendor/** -diff linguist-vendored
