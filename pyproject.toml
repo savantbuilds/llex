@@ -100,6 +100,7 @@ select = [
     "C4",  # flake8-comprehensions
     "UP",  # pyupgrade
     "N",   # pep8-naming
+    "S",   # flake8-bandit
     "SIM", # flake8-simplify
     "RUF", # ruff-specific
 ]
@@ -111,7 +112,8 @@ ignore = [
 ]
 
 [tool.ruff.lint.per-file-ignores]
-"tests/*" = ["S101"]
+# Tests legitimately assert on exception paths.
+"tests/*" = ["S101", "S105", "S106"]
 
 [tool.ruff.lint.isort]
 known-first-party = ["llex"]
