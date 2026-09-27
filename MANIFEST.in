@@ -1,0 +1,22 @@
+# The wheel is configured in pyproject.toml via [tool.setuptools.package-data].
+# This file governs the sdist, which additionally needs the front-end toolchain
+# so that a user who downloads the source can build the editor bundle.
+include pyproject.toml
+include README.md
+include LICENSE
+include build.mjs
+include package.json
+include package-lock.json
+
+recursive-include llex/templates *.html
+recursive-include llex/static *.css *.js *.map
+
+recursive-include tests *.py *.mjs
+recursive-include dev_docs *.md
+recursive-include inspirations *.md
+
+prune node_modules
+prune dist
+prune build
+prune .venv
+prune venv

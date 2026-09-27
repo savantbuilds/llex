@@ -1,0 +1,183 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+# Cancel superseded runs on the same ref rather than queueing them.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  python:
+    name: Python (lint, types, tests)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+          cache-dependency-path: pyproject.toml
+
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+
+      - name: Lint
+        run: ruff check llex tests
+
+      - name: Check formatting-adjacent lint rules
+        run: ruff check --select I,F,E,W,UP,B,SIM,RUF,N,C4 llex tests
+
+      - name: Types
+        run: mypy llex
+
+      - name: Tests
+        run: pytest --cov=llex --cov-report=term-missing --cov-report=xml
+
+      - name: Upload coverage
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage
+          path: coverage.xml
+          if-no-files-found: ignore
+
+  frontend:
+    name: Frontend (build, unit tests, headless boot)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+
+      - name: Install
+        run: npm ci
+
+      - name: Build
+        run: npm run build
+
+      - name: Unit tests
+        run: npm test
+
+      - name: End-to-end boot
+        # Boots the real server and evaluates the real bundle in jsdom.
+        run: |
+          python3 -m venv .venv
+          . .venv/bin/activate
+          pip install -e ".[dev]"
+          pytest tests/test_editor_boot.py tests/test_frontend_contract.py -v
+
+      - name: Confirm the bundle is not committed
+        run: |
+          if git ls-files --error-unmatch llex/static/editor.bundle.js 2>/dev/null; then
+            echo "error: the generated bundle is tracked; it must be built, not committed" >&2
+            exit 1
+          fi
+
+  package:
+    name: Package
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+          cache-dependency-path: pyproject.toml
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+          npm ci
+
+      - name: Build the front end into the package
+        run: npm run build
+
+      - name: Build the wheel and sdist
+        run: |
+          pip install build
+          python -m build
+
+      - name: Install the wheel into a clean environment
+        run: |
+          pip install --force-reinstall dist/*.whl
+          llex --version
+
+      - name: The wheel must carry its assets
+        run: |
+          python - <<'PY'
+          import zipfile, glob, sys
+          wheel = glob.glob("dist/*.whl")[0]
+          names = set(zipfile.ZipFile(wheel).namelist())
+          required = {
+              "llex/templates/index.html",
+              "llex/static/styles.css",
+              "llex/static/mini-toolbar.css",
+              "llex/static/editor.bundle.js",
+              "llex/static/js/main.js",
+              "llex/static/js/pagination.js",
+          }
+          missing = required - names
+          if missing:
+              sys.exit(f"the wheel is missing {sorted(missing)}")
+          print(f"wheel carries all {len(required)} required assets")
+          PY
+
+      - name: Upload distributions
+        uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
+          if-no-files-found: error
+
+  matrix:
+    name: Python ${{ matrix.python-version }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        # The floor declared in pyproject.toml, and the current release.
+        python-version: ["3.10", "3.11", "3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+          cache-dependency-path: pyproject.toml
+
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+
+      - name: Import check
+        run: python -c "import llex, llex.api, llex.document, llex.export, llex.llm, llex.main, llex.markup; print(llex.__version__)"
+
+      - name: Tests
+        run: pytest -q

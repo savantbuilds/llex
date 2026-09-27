@@ -50,11 +50,16 @@ Issues = "https://github.com/savantpseudoist/llex/issues"
 llex = "llex.main:main"
 
 [tool.setuptools]
-# Explicit package list: the package lives at the repository root, not under a
-# nested `llex/llex` directory. Static assets and Jinja-less templates are
-# shipped as package data so an installed wheel behaves like a source checkout.
-packages = ["llex"]
-include-package-data = true
+# The package lives at the repository root, not under a nested `llex/llex`
+# directory. `static` and `templates` hold data, not importable code, but they
+# must still be listed: setuptools treats any directory named in
+# `package-data` as a package and warns if it is not declared here.
+packages = [
+    "llex",
+    "llex.static",
+    "llex.static.js",
+    "llex.templates",
+]
 
 [tool.setuptools.package-data]
 llex = [
