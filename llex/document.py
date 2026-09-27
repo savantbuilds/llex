@@ -26,6 +26,7 @@ import contextlib
 import hashlib
 import json
 import os
+import re
 import tempfile
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field, replace
@@ -92,6 +93,67 @@ def _content_from(data: Mapping[str, Any]) -> str:
 
 #: 96 CSS pixels per inch, matching the browser's definition of 1in.
 DPI: Final = 96.0
+
+#: Millimetres per inch, the exact conversion factor.
+MM_PER_INCH: Final = 25.4
+
+#: Named paper sizes, in millimetres, portrait.
+#:
+#: The ISO sizes are defined in millimetres and converted here rather than typed
+#: as rounded inch values, because 210 mm is 8.2677 inches and not 8.27: a
+#: document printed on real A4 with a page described as 8.27 inches wide is
+#: measurably the wrong size, and the error accumulates in the margins.
+PAPER_MM: Final[dict[str, tuple[float, float]]] = {
+    "a3": (297.0, 420.0),
+    "a4": (210.0, 297.0),
+    "a5": (148.0, 210.0),
+    "b5": (176.0, 250.0),
+    "letter": (215.9, 279.4),
+    "legal": (215.9, 355.6),
+    "tabloid": (279.4, 431.8),
+}
+
+#: The paper used when nothing else is specified.
+DEFAULT_PAPER: Final = "letter"
+
+#: Used when the geometry matches no named size, e.g. a hand-edited file.
+CUSTOM_PAPER: Final = "custom"
+
+#: Paper sizes by name, in inches, portrait, derived from {@link PAPER_MM}.
+PAPER_SIZES: Final[dict[str, tuple[float, float]]] = {
+    name: (width / MM_PER_INCH, height / MM_PER_INCH)
+    for name, (width, height) in PAPER_MM.items()
+}
+
+#: Orientations a page may be in.
+ORIENTATIONS: Final = ("portrait", "landscape")
+
+#: Regions where Letter is the norm rather than A4. A4 is the default almost
+#: everywhere else, so defaulting to Letter for a user in most of the world meant
+#: every page they printed was the wrong size.
+LETTER_REGIONS: Final = frozenset({"US", "CA", "MX", "PH", "CL", "CO", "VE", "PR", "GT", "CR", "NI", "PA", "DO", "HT", "JM", "BS", "BB", "TT"})
+
+
+def default_paper_for_locale() -> str:
+    """The paper size the user's locale implies.
+
+    A4 outside North America and the Caribbean, Letter inside it. Read from the
+    environment rather than the operating system's regional settings, because
+    that is what a Python process can see portably; where nothing says anything
+    useful, Letter is kept as the default so existing documents are unaffected.
+    """
+    for variable in ("LC_ALL", "LC_MEASUREMENT", "LANG", "LANGUAGE"):
+        raw = os.environ.get(variable)
+        if not raw:
+            continue
+        # Values look like "en_GB.UTF-8" or "fr_FR"; the region is the part after
+        # the underscore, and an explicit country code wins over the language.
+        match = re.search(r"[_.-]([A-Za-z]{2})\b", raw)
+        if not match:
+            continue
+        region = match.group(1).upper()
+        return "letter" if region in LETTER_REGIONS else "a4"
+    return DEFAULT_PAPER
 
 _DEFAULT_STYLE_NAMES: Final = ("Normal", "Heading")
 
@@ -191,12 +253,30 @@ class StyleDefinition:
         return replace(clean, name=clean.name or name)
 
 
+def _paper_matching(width: float, height: float) -> str:
+    """The named size whose dimensions match, or ``custom``.
+
+    Compared in either orientation, so a landscape A4 page is still reported as
+    A4 rather than as an unknown size. The tolerance absorbs the rounding of the
+    millimetre-to-inch conversion in both directions.
+    """
+    short, long = (width, height) if width <= height else (height, width)
+    for name, (paper_width, paper_height) in PAPER_SIZES.items():
+        if abs(paper_width - short) < 0.01 and abs(paper_height - long) < 0.01:
+            return name
+    return CUSTOM_PAPER
+
+
 @dataclass(frozen=True, slots=True)
 class PageSetup:
     """Physical page geometry, in inches.
 
-    Letter at 1-inch margins is the US academic default and matches the
-    816x1056 CSS pixel page the frontend renders at :data:`DPI`.
+    ``paper`` names the size and ``orientation`` the rotation, but ``width`` and
+    ``height`` remain the geometry of record: a file may describe a page that
+    matches no standard size, and a document that has been nudged to fit
+    something must keep those exact numbers. The name is a label that makes the
+    settings dialog able to show "A4" rather than "8.2677 x 11.6929", and it
+    seeds the dimensions when it is chosen.
     """
 
     width: float = 8.5
@@ -205,6 +285,8 @@ class PageSetup:
     margin_right: float = 1.0
     margin_bottom: float = 1.0
     margin_left: float = 1.0
+    paper: str = DEFAULT_PAPER
+    orientation: str = "portrait"
 
     def __post_init__(self) -> None:
         for name in _PAGE_FIELDS:
@@ -217,16 +299,22 @@ class PageSetup:
             raise ValueError("horizontal margins leave no printable width")
         if self.margin_top + self.margin_bottom >= self.height:
             raise ValueError("vertical margins leave no printable height")
+        if self.orientation not in ORIENTATIONS:
+            raise ValueError(f"page orientation must be one of {ORIENTATIONS}, got {self.orientation!r}")
 
-    def to_dict(self) -> dict[str, float]:
-        return {name: float(getattr(self, name)) for name in _PAGE_FIELDS}
+    def to_dict(self) -> dict[str, Any]:
+        data: dict[str, Any] = {name: float(getattr(self, name)) for name in _PAGE_FIELDS}
+        data["paper"] = self.paper
+        data["orientation"] = self.orientation
+        return data
 
     @classmethod
     def from_dict(cls, data: Mapping[str, Any] | None) -> PageSetup:
         """Build page setup from untrusted data, falling back per field.
 
         A single bad margin must not make a document unopenable, so invalid
-        values degrade to the default instead of raising.
+        values degrade to the default instead of raising. The same applies to the
+        paper name and orientation, which are labels rather than geometry.
         """
         if not isinstance(data, Mapping):
             return cls()
@@ -239,10 +327,61 @@ class PageSetup:
             except (TypeError, ValueError):
                 number = float(getattr(defaults, name))
             values[name] = number if number > 0 else float(getattr(defaults, name))
+
+        paper = data.get("paper")
+        if not isinstance(paper, str) or paper not in PAPER_SIZES:
+            # A file written before sizes were named, or one naming a size this
+            # build does not know, is described by whatever its numbers say.
+            paper = _paper_matching(values["width"], values["height"])
+        orientation = data.get("orientation")
+        if orientation not in ORIENTATIONS:
+            orientation = "portrait"
+
         try:
-            return cls(**values)
+            return cls(**values, paper=paper, orientation=orientation)
         except ValueError:
             return defaults
+
+    @classmethod
+    def for_paper(cls, paper: str, orientation: str = "portrait", **margins: float) -> PageSetup:
+        """Page setup for a named size, in the given orientation.
+
+        The margins default to the ones already in use rather than to a fixed
+        1 inch, because switching paper should not also move the margins: A4 is
+        narrower than Letter, so 1.25-inch margins that were comfortable on one
+        are cramped on the other, and silently changing them would be a surprise.
+        """
+        size = PAPER_SIZES.get(paper)
+        if size is None:
+            raise ValueError(f"unknown paper size {paper!r}; expected one of {sorted(PAPER_SIZES)}")
+        if orientation not in ORIENTATIONS:
+            raise ValueError(f"page orientation must be one of {ORIENTATIONS}, got {orientation!r}")
+        width, height = size if orientation == "portrait" else (size[1], size[0])
+        base = cls()
+        return cls(
+            width=width,
+            height=height,
+            margin_top=margins.get("margin_top", base.margin_top),
+            margin_right=margins.get("margin_right", base.margin_right),
+            margin_bottom=margins.get("margin_bottom", base.margin_bottom),
+            margin_left=margins.get("margin_left", base.margin_left),
+            paper=paper,
+            orientation=orientation,
+        )
+
+    @property
+    def named_paper(self) -> str:
+        """The named size this geometry matches, or ``custom``.
+
+        Derived from the numbers rather than read from :attr:`paper`, so a page
+        that was edited by hand is reported honestly instead of still claiming to
+        be A4.
+        """
+        return _paper_matching(self.width, self.height)
+
+    @property
+    def is_landscape(self) -> bool:
+        return self.width > self.height
 
     @property
     def pixel_width(self) -> int:

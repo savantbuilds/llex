@@ -6,11 +6,24 @@ from typing import Any
 
 import pytest
 
-from llex.document import FORMAT_VERSION, Document
+from llex.document import (
+    FORMAT_VERSION,
+    MM_PER_INCH,
+    PAPER_SIZES,
+    Document,
+    PageSetup,
+    default_paper_for_locale,
+)
+from llex.export import write_html
 from llex.markup import ScaffoldRef, parse_document, to_plain_text
 from llex.validate import Report, main, validate_bytes, validate_data, validate_file
 
 from .conftest import content_is_preserved
+
+#: The frontend sources, for the contract assertions below.
+PACKAGE = Path(__file__).resolve().parent.parent / "llex"
+SCRIPT_DIR = PACKAGE / "static" / "js"
+STYLES = PACKAGE / "static" / "styles.css"
 
 #: A document with every construct the storage form has to survive.
 RICH = (
@@ -20,7 +33,7 @@ RICH = (
     '<blockquote><p>quoted</p></blockquote>'
     '<p style="text-align:center">centred</p>'
     '<hr>'
-    '<p><span data-scaffold="s1" data-instruction="do the thing">todo</span></p>'
+    '<p><span data-scaffold=" " data-scaffold-id="s1" data-scaffold-instruction="do the thing">todo</span></p>'
     "<p>café — 日本語</p></div>"
 )
 
@@ -33,42 +46,64 @@ class TestScaffoldInTheModel:
     dropped it silently.
     """
 
-    def test_a_scaffold_is_read_off_a_span(self) -> None:
-        parsed = parse_document('<p><span data-scaffold="s1" data-instruction="go">todo</span></p>')
+    #: Exactly what the editor writes, from `Scaffold.renderHTML` in
+    #: `extensions.js`. Pinned here because the Python and JavaScript halves of
+    #: the format have to agree, and a rename on one side would otherwise show
+    #: up only as prompts quietly vanishing from an export.
+    EDITOR_FORM = (
+        '<p><span data-scaffold="" data-scaffold-id="s7"'
+        ' data-scaffold-instruction="expand this">todo</span></p>'
+    )
+
+    def test_the_editor_s_own_attributes_are_read(self) -> None:
+        parsed = parse_document(self.EDITOR_FORM)
         run = next(iter(parsed.iter_blocks())).runs[0]
-        assert run.style.scaffold == ScaffoldRef(id="s1", instruction="go")
+        assert run.style.scaffold == ScaffoldRef(id="s7", instruction="expand this")
+
+    def test_the_short_form_is_also_accepted(self) -> None:
+        parsed = parse_document('<p><span data-scaffold="s7" data-instruction="go">t</span></p>')
+        run = next(iter(parsed.iter_blocks())).runs[0]
+        assert run.style.scaffold == ScaffoldRef(id="s7", instruction="go")
 
     def test_the_instruction_survives(self) -> None:
         """The instruction is the part the user wrote; losing it is the loss."""
-        parsed = parse_document('<p><span data-scaffold="s1" data-instruction="rewrite this">t</span></p>')
-        assert "rewrite this" in repr(next(iter(parsed.iter_blocks())).runs[0].style)
+        parsed = parse_document(self.EDITOR_FORM)
+        assert "expand this" in repr(next(iter(parsed.iter_blocks())).runs[0].style)
 
     def test_a_plain_span_is_not_a_scaffold(self) -> None:
         parsed = parse_document("<p><span>plain</span></p>")
         assert next(iter(parsed.iter_blocks())).runs[0].style.scaffold is None
 
-    def test_an_empty_id_is_not_a_scaffold(self) -> None:
+    def test_a_bare_marker_is_not_a_scaffold(self) -> None:
         # A badge the user cannot act on is worse than none.
         parsed = parse_document('<p><span data-scaffold="">x</span></p>')
         assert next(iter(parsed.iter_blocks())).runs[0].style.scaffold is None
 
     def test_a_scaffold_survives_html_export(self) -> None:
-        from llex.export import write_html
 
-        parsed = parse_document('<p><span data-scaffold="s1" data-instruction="go">todo</span></p>')
+        parsed = parse_document(self.EDITOR_FORM)
         html = write_html(Document(), parsed).decode("utf-8")
-        assert 'data-scaffold="s1"' in html
-        assert 'data-instruction="go"' in html
+        assert 'data-scaffold-id="s7"' in html
+        assert 'data-scaffold-instruction="expand this"' in html
 
     def test_a_scaffold_survives_a_round_trip(self) -> None:
         from llex.export import _html_body
 
-        source = '<p><span data-scaffold="s1" data-instruction="go">todo</span></p>'
-        assert 'data-scaffold="s1"' in _html_body(parse_document(source))
+        rendered = _html_body(parse_document(self.EDITOR_FORM))
+        assert 'data-scaffold-id="s7"' in rendered
+        # And re-reading it gives the same scaffold, not a degraded one.
+        again = parse_document(rendered)
+        run = next(iter(again.iter_blocks())).runs[0]
+        assert run.style.scaffold == ScaffoldRef(id="s7", instruction="expand this")
+
+    def test_a_scaffold_survives_a_saved_file(self, tmp_path: Path) -> None:
+        document = Document(title="S", content=self.EDITOR_FORM)
+        loaded = Document.load(document.save(tmp_path / "s.llex"))
+        assert 'data-scaffold-id="s7"' in loaded.content
 
     def test_plain_text_still_omits_the_markup(self) -> None:
         # The text is what a plain-text consumer wants; the instruction is not.
-        assert to_plain_text('<p><span data-scaffold="s1" data-instruction="go">todo</span></p>').strip() == "todo"
+        assert to_plain_text(self.EDITOR_FORM).strip() == "todo"
 
 
 class TestDiffableStorage:
@@ -326,3 +361,145 @@ def _valid(**overrides: Any) -> dict[str, Any]:
     }
     data.update(overrides)
     return data
+
+class TestPaperSizes:
+    """A word processor that only knows US Letter prints the wrong paper."""
+
+    def test_a4_is_exactly_210_by_297_millimetres(self) -> None:
+        # Typed as 8.27 inches it would be 0.06mm out on every A4 page.
+        width, height = PAPER_SIZES["a4"]
+        assert width * MM_PER_INCH == pytest.approx(210.0, abs=0.001)
+        assert height * MM_PER_INCH == pytest.approx(297.0, abs=0.001)
+
+    @pytest.mark.parametrize("name", sorted(PAPER_SIZES))
+    def test_every_named_size_is_portrait(self, name: str) -> None:
+        width, height = PAPER_SIZES[name]
+        assert width < height, f"{name} should be portrait in the registry"
+
+    def test_a4_in_pixels_is_the_size_a_reader_expects(self) -> None:
+        setup = PageSetup.for_paper("a4")
+        assert (setup.pixel_width, setup.pixel_height) == (794, 1123)
+
+    def test_landscape_swaps_the_dimensions(self) -> None:
+        portrait = PageSetup.for_paper("a4")
+        landscape = PageSetup.for_paper("a4", "landscape")
+        assert landscape.width == portrait.height
+        assert landscape.height == portrait.width
+        assert landscape.is_landscape is True
+
+    def test_landscape_is_still_recognised_as_a4(self) -> None:
+        assert PageSetup.for_paper("a4", "landscape").named_paper == "a4"
+
+    def test_an_odd_size_is_reported_as_custom(self) -> None:
+        assert PageSetup(width=7.0, height=9.5).named_paper == "custom"
+
+    def test_switching_paper_keeps_the_margins(self) -> None:
+        """Silently moving the margins would be a surprise; A4 is narrower than
+        Letter and 1.25in margins that suited one are cramped on the other."""
+        generous = PageSetup(margin_top=1.25, margin_left=1.25)
+        a4 = PageSetup.for_paper("a4", "portrait", margin_top=1.25, margin_left=1.25)
+        assert a4.margin_top == generous.margin_top
+        assert a4.margin_left == generous.margin_left
+
+    def test_margins_too_large_for_the_paper_are_rejected(self) -> None:
+        with pytest.raises(ValueError):
+            PageSetup(width=3.0, height=4.0, margin_left=2.0, margin_right=2.0)
+
+    def test_an_unknown_size_is_rejected(self) -> None:
+        with pytest.raises(ValueError, match="unknown paper size"):
+            PageSetup.for_paper("a99")
+
+    def test_an_unknown_orientation_is_rejected(self) -> None:
+        with pytest.raises(ValueError, match="orientation"):
+            PageSetup.for_paper("a4", "sideways")
+
+    def test_the_size_and_orientation_round_trip(self) -> None:
+        original = PageSetup.for_paper("b5", "landscape")
+        loaded = PageSetup.from_dict(original.to_dict())
+        assert loaded.paper == "b5"
+        assert loaded.orientation == "landscape"
+        assert (loaded.width, loaded.height) == (original.width, original.height)
+
+    def test_a_file_without_a_paper_name_is_described_by_its_numbers(self) -> None:
+        """Version 3 and earlier stored only dimensions."""
+        assert PageSetup.from_dict({"width": 8.5, "height": 11.0}).paper == "letter"
+
+    def test_an_unknown_paper_name_falls_back_to_the_numbers(self) -> None:
+        setup = PageSetup.from_dict({"width": 8.5, "height": 11.0, "paper": "papyrus"})
+        assert setup.paper == "letter"
+
+    def test_a_nonsense_orientation_is_ignored(self) -> None:
+        assert PageSetup.from_dict({"orientation": "diagonal"}).orientation == "portrait"
+
+    def test_a_saved_document_keeps_its_paper(self, tmp_path: Path) -> None:
+        document = Document(page=PageSetup.for_paper("a4"))
+        loaded = Document.load(document.save(tmp_path / "a4.llex"))
+        assert loaded.page.named_paper == "a4"
+
+    @pytest.mark.parametrize(
+        ("locale", "expected"),
+        [
+            ("en_US.UTF-8", "letter"),
+            ("en_CA", "letter"),
+            ("es_MX", "letter"),
+            ("fr_FR", "a4"),
+            ("de_DE.UTF-8", "a4"),
+            ("en_GB", "a4"),
+            ("ja_JP", "a4"),
+        ],
+    )
+    def test_the_locale_picks_the_paper(
+        self, locale: str, expected: str, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        for name in ("LC_ALL", "LC_MEASUREMENT", "LANGUAGE"):
+            monkeypatch.delenv(name, raising=False)
+        monkeypatch.setenv("LANG", locale)
+        assert default_paper_for_locale() == expected
+
+    def test_an_explicit_measurement_wins(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("LANG", "en_US")
+        monkeypatch.setenv("LC_MEASUREMENT", "fr_FR")
+        assert default_paper_for_locale() == "a4"
+
+    def test_an_unhelpful_locale_keeps_the_default(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        for name in ("LC_ALL", "LC_MEASUREMENT", "LANG", "LANGUAGE"):
+            monkeypatch.delenv(name, raising=False)
+        assert default_paper_for_locale() == "letter"
+
+
+class TestBidiAndLogicalProperties:
+    """Right-to-left text, and properties that follow it."""
+
+    def test_the_page_padding_follows_the_text_direction(self) -> None:
+        """The margins are named physically, because a sheet of paper does not
+        rotate, but the padding that positions the text on it must follow the
+        text or the wider inner margin ends up on the outside."""
+        text = STYLES.read_text(encoding="utf-8")
+        assert "--margin-inline-start" in text
+        assert "--margin-inline-end" in text
+        rule = text.split(".tiptap > .page {", 1)[1].split("}", 1)[0]
+        assert "var(--margin-inline-start)" in rule
+        assert "var(--margin-inline-end)" in rule
+
+    def test_the_page_box_itself_stays_physical(self) -> None:
+        text = STYLES.read_text(encoding="utf-8")
+        rule = text.split(".tiptap > .page {", 1)[1].split("}", 1)[0]
+        assert "width: var(--page-width)" in rule
+        assert "height: var(--page-height)" in rule
+
+    def test_every_block_takes_its_direction_from_its_text(self) -> None:
+        """A document-level `dir` cannot express a bilingual document."""
+        for name in ("extensions.js", "main.js"):
+            assert "DIRECTION" in (SCRIPT_DIR / name).read_text(encoding="utf-8"), name
+
+    def test_standalone_exports_align_logically(self) -> None:
+        text = (PACKAGE / "export.py").read_text(encoding="utf-8")
+        assert "text-align: start" in text
+
+    def test_the_direction_attribute_is_importable(self) -> None:
+        # It is shared between the heading and the paragraph, which come from
+        # different extensions.
+        script = (SCRIPT_DIR / "extensions.js").read_text(encoding="utf-8")
+        assert "export const DIRECTION = { dir: 'auto' }" in script

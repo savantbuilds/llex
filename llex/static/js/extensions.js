@@ -62,6 +62,20 @@ export const Scaffold = Mark.create({
  */
 export const CharacterStyle = TextStyleKit;
 
+/**
+ * Direction handling for block nodes.
+ *
+ * `dir="auto"` makes each block take its direction from its own text, which is
+ * what a bilingual document needs: an Arabic heading inside an English document
+ * has to lay out right-to-left on its own, and a document-level `dir` could not
+ * express that. The browser derives the direction from the first strong
+ * character, so an empty or purely numeric block stays with the surrounding text
+ * rather than guessing.
+ *
+ * Exported because paragraphs need it too, and they come from StarterKit.
+ */
+export const DIRECTION = { dir: 'auto' };
+
 /** Heading levels 1-6. */
 export const Heading = Node.create({
   name: 'heading',
@@ -98,7 +112,11 @@ export const Heading = Node.create({
     // `level` is carried by the tag name; emitting it as an attribute as well
     // would put `level="1"` in the HTML for no reader to use.
     const { level: _level, ...rest } = HTMLAttributes;
-    return [`h${level}`, mergeAttributes(this.options.HTMLAttributes, rest), 0];
+    return [
+      `h${level}`,
+      mergeAttributes(this.options.HTMLAttributes, rest, DIRECTION),
+      0,
+    ];
   },
 });
 

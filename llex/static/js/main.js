@@ -11,12 +11,13 @@
  * Each concern now lives in its own module with explicit dependencies.
  */
 
-import { Editor } from '@tiptap/core';
+import { Editor, mergeAttributes } from '@tiptap/core';
 import StarterKit from '@tiptap/starter-kit';
+import Paragraph from '@tiptap/extension-paragraph';
 import TextAlign from '@tiptap/extension-text-align';
 import Document from '@tiptap/extension-document';
 
-import { CharacterStyle, Heading, Page, Scaffold } from './extensions.js';
+import { CharacterStyle, DIRECTION, Heading, Page, Scaffold } from './extensions.js';
 import { Paginator, VIRTUAL_CLASS, supportsContainment } from './paginator.js';
 import { stripPageWrappers } from './pagination.js';
 import { createRibbon } from './ribbon.js';
@@ -150,7 +151,24 @@ async function boot() {
       // configured off below.
       Heading,
       // StarterKit v3 already bundles Underline and Heading.
-      StarterKit.configure({ document: false, heading: false }),
+      StarterKit.configure({ document: false, heading: false, paragraph: false }),
+    // Registered separately rather than through `StarterKit.configure`, which
+    // silently keeps its own copy: the custom `renderHTML` below is then never
+    // called and the attribute is simply absent. Disabling StarterKit's
+    // paragraph and supplying this one is the pattern already used for `heading`
+    // and `document` above.
+    Paragraph.extend({
+      // `dir="auto"` per block, for the same reason the headings have it: a
+      // document may contain text in both directions, and only the block's own
+      // content can say which way it runs.
+      renderHTML({ HTMLAttributes }) {
+        return [
+          'p',
+          mergeAttributes(this.options.HTMLAttributes, HTMLAttributes, DIRECTION),
+          0,
+        ];
+      },
+    }),
       TextAlign.configure({ types: ['heading', 'paragraph'] }),
     ],
     content: EMPTY_DOCUMENT,
@@ -206,8 +224,10 @@ async function boot() {
   });
 
   const settings = createSettings({
-    onMarginsChanged: (margins) => {
+    onPageChanged: ({ width, height, margins }) => {
       const style = document.documentElement.style;
+      style.setProperty('--page-width', `${width * PIXELS_PER_INCH}px`);
+      style.setProperty('--page-height', `${height * PIXELS_PER_INCH}px`);
       style.setProperty('--margin-top', `${margins.top * PIXELS_PER_INCH}px`);
       style.setProperty('--margin-right', `${margins.right * PIXELS_PER_INCH}px`);
       style.setProperty('--margin-bottom', `${margins.bottom * PIXELS_PER_INCH}px`);

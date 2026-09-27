@@ -337,16 +337,27 @@ def _style_from_tags(
 def _scaffold_from(attrs: dict[str, str | None] | None) -> ScaffoldRef | None:
     """Read a scaffold off an element's attributes, if it has one.
 
-    A scaffold is only recognised when the element carries a non-empty
-    ``data-scaffold``; an id with no instruction is not a scaffold the user can
-    act on, and inventing an empty one would render as a stray badge.
+    The editor's own attribute names are the reference, because they are what
+    appears in the user's saved documents. Two alternates are accepted as well:
+    a hand-written or imported file may put the id straight into ``data-scaffold``
+    and the instruction into ``data-instruction``.
+
+    The marker attribute alone is not enough -- an element with
+    ``data-scaffold=""`` and no id is a badge the user cannot act on, which is
+    worse than none, so an empty id means "not a scaffold".
     """
     if not attrs:
         return None
-    identifier = (attrs.get("data-scaffold") or "").strip()
+    identifier = (attrs.get("data-scaffold-id") or "").strip()
+    instruction = (attrs.get("data-scaffold-instruction") or "").strip()
     if not identifier:
-        return None
-    return ScaffoldRef(id=identifier, instruction=(attrs.get("data-instruction") or "").strip())
+        # Tolerated alternate: the id in the marker attribute itself.
+        marker = (attrs.get("data-scaffold") or "").strip()
+        if not marker:
+            return None
+        identifier = marker
+        instruction = (attrs.get("data-instruction") or "").strip()
+    return ScaffoldRef(id=identifier, instruction=instruction)
 
 
 def _align_from(attrs: dict[str, str | None]) -> str | None:

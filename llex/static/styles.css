@@ -29,16 +29,31 @@
   --danger: #e51400;
   --warning: #f4b41a;
 
+  /* Overridden by the settings module. Defaults are US Letter, which is what a
+     document that says nothing about its paper means. */
   --page-width: 816px;
   --page-height: 1056px;
   --page-gap: 40px;
   --page-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
 
-  /* Overridden by the settings module. */
   --margin-top: 96px;
   --margin-right: 96px;
   --margin-bottom: 96px;
   --margin-left: 96px;
+
+  /* Logical aliases of the margins above.
+
+     A document containing Arabic or Hebrew sets `dir="rtl"` on its block
+     elements, and with physical padding the margins would stay on the same
+     physical side while the text flows the other way -- so the wider inner
+     margin would end up on the outside. The page box is the one place this
+     matters, because the page itself must not mirror: it is a physical sheet of
+     paper, so its width and gap stay physical while its padding follows the
+     text. */
+  --margin-block-start: var(--margin-top);
+  --margin-inline-end: var(--margin-right);
+  --margin-block-end: var(--margin-bottom);
+  --margin-inline-start: var(--margin-left);
 
   --ui-font: "Segoe UI", Tahoma, Geneva, Verdana, sans-serif;
   --doc-font: Calibri, Arial, sans-serif;
@@ -689,7 +704,8 @@ body.focus-mode #sidebar {
   flex: 0 0 auto;
   width: var(--page-width);
   height: var(--page-height);
-  padding: var(--margin-top) var(--margin-right) var(--margin-bottom) var(--margin-left);
+  padding: var(--margin-block-start) var(--margin-inline-end) var(--margin-block-end)
+    var(--margin-inline-start);
   background: var(--paper-bg);
   color: var(--text-color);
   box-shadow: var(--page-shadow);

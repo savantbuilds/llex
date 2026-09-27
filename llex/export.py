@@ -255,9 +255,13 @@ def _html_marks(style: InlineStyle) -> list[str]:
         # Innermost, so it wraps the text rather than the formatting around it.
         # A scaffold the reader can act on is content, and dropping it here is
         # how a user's prompts would quietly disappear from an export.
+        #
+        # The attribute names are the editor's own, so a file exported from
+        # LLex and reopened in LLex is unchanged, and a hand-written file using
+        # the shorter form is still read.
         tags.append(
-            f'span data-scaffold="{html_module.escape(style.scaffold.id, quote=True)}"'
-            f' data-instruction="{html_module.escape(style.scaffold.instruction, quote=True)}"'
+            f'span data-scaffold="" data-scaffold-id="{html_module.escape(style.scaffold.id, quote=True)}"'
+            f' data-scaffold-instruction="{html_module.escape(style.scaffold.instruction, quote=True)}"'
         )
     if style.code:
         tags.append("code")
@@ -352,6 +356,11 @@ _STANDALONE_CSS: Final = """
     color: #111;
     background: #f4f4f5;
   }}
+  /* `start` rather than `left`, so a document containing right-to-left text has
+     its default alignment follow the text instead of pinning every paragraph to
+     the left edge. Each block also carries `dir="auto"`, so the direction is
+     decided per block rather than for the document as a whole. */
+  p, h1, h2, h3, h4, h5, h6 {{ text-align: start; }}
   article {{
     background: #fff;
     padding: {pad_top}px {pad_right}px {pad_bottom}px {pad_left}px;

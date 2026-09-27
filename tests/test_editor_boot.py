@@ -388,9 +388,11 @@ class TestEditorBoots:
         assert boot_result.get("pageCount") == 1
 
     def test_the_document_round_trips(self, boot_result: dict[str, object]) -> None:
+        # `dir="auto"` on every block: a document may mix directions, and only a
+        # block's own content can say which way its text runs.
         assert boot_result.get("html") == (
-            '<div class="page"><h1>Boot</h1><p>One test here.</p>'
-            '<p>And a second test there.</p></div>'
+            '<div class="page"><h1 dir="auto">Boot</h1><p dir="auto">One test here.</p>'
+            '<p dir="auto">And a second test there.</p></div>'
         )
 
     def test_the_schema_includes_the_page_node(self, boot_result: dict[str, object]) -> None:

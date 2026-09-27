@@ -1,10 +1,32 @@
 /**
- * Settings: page margins and theme colours.
+ * Settings: paper, page margins and theme colours.
  *
  * Stored in `localStorage` as an app preference rather than in the document,
  * because they describe how this installation is set up, not what the document
  * contains. The page geometry the backend owns is applied separately.
+ *
+ * Paper size is expressed in inches throughout rather than centimetres, because
+ * that is what CSS and the backend both speak, and because mixing the two in a
+ * settings dialog is how a page ends up 2% wrong. A4 is stored as its exact
+ * conversion (210mm / 25.4) rather than as a rounded 8.27, so a document printed
+ * on real A4 is the size it claims to be.
  */
+
+/** 96 CSS pixels per inch, matching the browser's definition of 1in. */
+export const DPI = 96;
+
+/** Paper sizes in millimetres, matching the backend's registry. */
+export const PAPER_MM = {
+  a3: [297, 420],
+  a4: [210, 297],
+  a5: [148, 210],
+  b5: [176, 250],
+  letter: [215.9, 279.4],
+  legal: [215.9, 355.6],
+  tabloid: [279.4, 431.8],
+};
+
+const MM_PER_INCH = 25.4;
 
 const STORAGE_KEY = 'llex.settings.v1';
 
@@ -12,6 +34,9 @@ const FIELDS = [
   ['margin-top', 'marginTop', 'number'],
   ['margin-right', 'marginRight', 'number'],
   ['margin-bottom', 'marginBottom', 'number'],
+  // The left margin used to be absent from this list while being present in the
+  // defaults, so the control did nothing and the margin stayed at one inch.
+  ['margin-left', 'marginLeft', 'number'],
   ['theme-bg', 'themeBg', 'color'],
   ['theme-paper', 'themePaper', 'color'],
   ['theme-text', 'themeText', 'color'],
@@ -24,6 +49,8 @@ const DEFAULTS = {
   marginRight: 1,
   marginBottom: 1,
   marginLeft: 1,
+  paper: 'letter',
+  orientation: 'portrait',
   themeBg: '#f0f0f0',
   themePaper: '#ffffff',
   themeText: '#000000',
@@ -36,6 +63,31 @@ export function clampMargin(value, pageWidthInches = 8.5) {
   const numeric = Number.parseFloat(value);
   if (!Number.isFinite(numeric)) return 1;
   return Math.min(Math.max(numeric, 0.25), Math.max(0.25, pageWidthInches / 2 - 0.25));
+}
+
+/**
+ * The page's width and height in inches, for a named paper and orientation.
+ *
+ * @param {string} paper Key of {@link PAPER_MM}.
+ * @param {string} orientation `'portrait'` or `'landscape'`.
+ * @returns {{width: number, height: number}} Falls back to Letter.
+ */
+export function paperSize(paper, orientation) {
+  const millimetres = PAPER_MM[paper] || PAPER_MM.letter;
+  const [short, long] = millimetres;
+  return orientation === 'landscape'
+    ? { width: long / MM_PER_INCH, height: short / MM_PER_INCH }
+    : { width: short / MM_PER_INCH, height: long / MM_PER_INCH };
+}
+
+/** A short human description of a page, for the note under the controls. */
+export function describePaper(paper, orientation) {
+  const millimetres = PAPER_MM[paper];
+  if (!millimetres) return 'Custom size';
+  const label = paper === 'tabloid' ? 'Tabloid / Ledger' : paper.toUpperCase();
+  const { width, height } = paperSize(paper, orientation);
+  const mm = orientation === 'landscape' ? `${millimetres[1]} × ${millimetres[0]}` : `${millimetres[0]} × ${millimetres[1]}`;
+  return `${label}, ${mm} mm (${width.toFixed(2)} × ${height.toFixed(2)} in), ${orientation}`;
 }
 
 function readStored() {
@@ -51,15 +103,27 @@ function readStored() {
 }
 
 /**
- * @param {{onMarginsChanged: (margins: object) => void, onZoomChanged?: (percent: number) => void}} hooks
+ * @param {{onPageChanged: (geometry: object) => void, onZoomChanged?: (percent: number) => void}} hooks
  */
 export function createSettings(hooks) {
   const modal = document.getElementById('settings-modal');
-  const inputs = Object.fromEntries(
-    FIELDS.map(([id, key]) => [key, document.getElementById(id)]),
-  );
+  const inputs = Object.fromEntries(FIELDS.map(([id, key]) => [key, document.getElementById(id)]));
+  const paperSelect = document.getElementById('page-paper');
+  const orientationSelect = document.getElementById('page-orientation');
+  const sizeNote = document.getElementById('page-size-note');
 
   let settings = readStored();
+
+  function geometry() {
+    const { width, height } = paperSize(settings.paper, settings.orientation);
+    return {
+      width,
+      height,
+      paper: settings.paper,
+      orientation: settings.orientation,
+      margins: marginsInInches(width),
+    };
+  }
 
   function apply() {
     const root = document.documentElement;
@@ -68,16 +132,20 @@ export function createSettings(hooks) {
     root.style.setProperty('--text-color', settings.themeText);
     root.style.setProperty('--ribbon-bg', settings.themeRibbon);
     root.style.setProperty('--border-color', settings.themeBorder);
-    hooks.onMarginsChanged(marginsInInches());
+    hooks.onPageChanged(geometry());
   }
 
-  function marginsInInches() {
+  function marginsInInches(pageWidthInches = paperSize(settings.paper, settings.orientation).width) {
     return {
-      top: clampMargin(settings.marginTop),
-      right: clampMargin(settings.marginRight),
-      bottom: clampMargin(settings.marginBottom),
-      left: clampMargin(settings.marginLeft),
+      top: clampMargin(settings.marginTop, pageWidthInches),
+      right: clampMargin(settings.marginRight, pageWidthInches),
+      bottom: clampMargin(settings.marginBottom, pageWidthInches),
+      left: clampMargin(settings.marginLeft, pageWidthInches),
     };
+  }
+
+  function refreshNote() {
+    if (sizeNote) sizeNote.textContent = describePaper(settings.paper, settings.orientation);
   }
 
   function fill() {
@@ -85,6 +153,9 @@ export function createSettings(hooks) {
       const input = document.getElementById(id);
       if (input) input.value = String(settings[key]);
     }
+    if (paperSelect) paperSelect.value = settings.paper;
+    if (orientationSelect) orientationSelect.value = settings.orientation;
+    refreshNote();
   }
 
   function open() {
@@ -110,6 +181,8 @@ export function createSettings(hooks) {
       const raw = input.value;
       settings[key] = type === 'number' ? clampMargin(raw) : raw;
     }
+    if (paperSelect && PAPER_MM[paperSelect.value]) settings.paper = paperSelect.value;
+    if (orientationSelect) settings.orientation = orientationSelect.value;
     try {
       window.localStorage.setItem(STORAGE_KEY, JSON.stringify(settings));
     } catch {
@@ -118,6 +191,17 @@ export function createSettings(hooks) {
     apply();
     close();
   }
+
+  // The note updates as the controls change, so the size is visible before
+  // committing rather than only after.
+  paperSelect?.addEventListener('change', () => {
+    settings.paper = paperSelect.value;
+    refreshNote();
+  });
+  orientationSelect?.addEventListener('change', () => {
+    settings.orientation = orientationSelect.value;
+    refreshNote();
+  });
 
   document.getElementById('menu-settings')?.addEventListener('click', open);
   document.getElementById('btn-settings-save')?.addEventListener('click', save);
@@ -128,5 +212,15 @@ export function createSettings(hooks) {
   });
 
   apply();
-  return { open, close, save, apply, marginsInInches, get settings() { return settings; } };
+  return {
+    open,
+    close,
+    save,
+    apply,
+    geometry,
+    marginsInInches,
+    get settings() {
+      return settings;
+    },
+  };
 }

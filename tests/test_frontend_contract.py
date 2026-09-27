@@ -12,6 +12,8 @@ from pathlib import Path
 
 import pytest
 
+from llex.document import PAPER_MM, PAPER_SIZES
+
 PACKAGE = Path(__file__).resolve().parent.parent / "llex"
 TEMPLATE = PACKAGE / "templates" / "index.html"
 SCRIPT_DIR = PACKAGE / "static" / "js"
@@ -117,6 +119,9 @@ _SETTINGS_CONTROLS = [
     "margin-right",
     "margin-bottom",
     "margin-left",
+    "page-paper",
+    "page-orientation",
+    "page-size-note",
     "theme-bg",
     "theme-paper",
     "theme-text",
@@ -232,6 +237,51 @@ class TestScriptTargetsExist:
             if name not in template_ids and name not in _ALLOWED_MISSING
         }
         assert not missing, f"script references ids absent from the template: {sorted(missing)}"
+
+    def test_every_setting_control_is_read_and_saved(self) -> None:
+        """A control can be in the template, listed in the defaults, and still do
+        nothing. The left margin was exactly that: present in the template and
+        in the defaults, absent from the list of fields the dialog reads and
+        writes, so the one margin that could not be changed was the left one."""
+        text = (SCRIPT_DIR / "settings.js").read_text(encoding="utf-8")
+        block = text.split("const FIELDS = [", 1)[1].split("];", 1)[0]
+        entries = re.findall(r"\['([a-z0-9-]+)',\s*'([A-Za-z]+)',\s*'(\w+)'\]", block)
+        assert entries, "no setting fields were found in settings.js"
+        ids = {element_id for element_id, _key, _kind in entries}
+        keys = {key for _element_id, key, _kind in entries}
+
+        defaults_block = text.split("const DEFAULTS = {", 1)[1].split("};", 1)[0]
+        defaults = set(re.findall(r"^\s*([A-Za-z]+):", defaults_block, re.MULTILINE))
+        # Paper and orientation are read from their own selects, not FIELDS.
+        selects = {"paper", "orientation"}
+        assert defaults - selects <= keys, f"settings with no control: {sorted(defaults - selects - keys)}"
+
+        # And every control the dialog reads must exist in the template.
+        template = PACKAGE.joinpath("templates/index.html").read_text(encoding="utf-8")
+        template_ids = set(re.findall(r'id="([^"]+)"', template))
+        assert ids <= template_ids, f"controls not in the template: {sorted(ids - template_ids)}"
+
+    def test_the_page_padding_uses_the_logical_margins(self) -> None:
+        text = STYLES.read_text(encoding="utf-8")
+        rule = text.split(".tiptap > .page {", 1)[1].split("}", 1)[0]
+        assert "padding: var(--margin-block-start) var(--margin-inline-end)" in " ".join(rule.split())
+
+    def test_the_python_paper_sizes_match_the_javascript_ones(self) -> None:
+        """The two halves of the page setup must not drift apart."""
+        import re as _re
+
+        source = (SCRIPT_DIR / "settings.js").read_text(encoding="utf-8")
+        block = source.split("export const PAPER_MM = {", 1)[1].split("};", 1)[0]
+        javascript = {
+            name: (float(a), float(b))
+            for name, a, b in _re.findall(r"(\w+):\s*\[([\d.]+),\s*([\d.]+)\]", block)
+        }
+        assert javascript, "no paper sizes were found in settings.js"
+        assert set(javascript) == set(PAPER_SIZES), (
+            f"paper sizes differ: {set(javascript) ^ set(PAPER_SIZES)}"
+        )
+        for name, millimetres in javascript.items():
+            assert PAPER_MM[name] == millimetres, f"{name} differs between the two"
 
     def test_export_menu_container_exists(self, template_ids: set[str]) -> None:
         """The download menu is populated at runtime, so it needs a container."""
