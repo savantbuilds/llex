@@ -283,6 +283,53 @@ class TestScriptTargetsExist:
         for name, millimetres in javascript.items():
             assert PAPER_MM[name] == millimetres, f"{name} differs between the two"
 
+    def test_every_select_can_be_read(self) -> None:
+        """A `<select>` in dark chrome must be told both its background and its
+        text colour.
+
+        The global `color: inherit` gives it the surrounding light text, but the
+        control and its open list are painted by the operating system in its own
+        light chrome, so the selected item ends up light on light and cannot be
+        read. Two controls shipped that way -- the paper and orientation choices
+        -- and a third, the context toolbar's font controls, had no rule at all.
+        """
+        text = STYLES.read_text(encoding="utf-8")
+        # Anchored to a line start, so it finds the element selector and not the
+        # tail of `.modal-body select {`.
+        base = re.search(r"^select \{([^}]*)\}", text, re.MULTILINE)
+        assert base, "there is no bare `select` rule"
+        assert "background:" in base.group(1)
+        assert "color:" in base.group(1)
+
+        # And the open list is drawn separately by the OS, so it needs its own.
+        options = re.search(r"^select option \{([^}]*)\}", text, re.MULTILINE)
+        assert options, "there is no bare `select option` rule"
+        assert "background:" in options.group(1)
+        assert "color:" in options.group(1)
+
+    @pytest.mark.parametrize("element_id", ["page-paper", "page-orientation", "mt-font-family", "mt-font-size", "style-dropdown", "font-family", "font-size", "llm-tone"])
+    def test_no_select_is_left_unstyled(self, element_id: str, template: str) -> None:
+        """Every select either has a class the stylesheet knows, or is a
+        descendant of a selector the stylesheet knows."""
+        match = re.search(rf'<select\b[^>]*id="{element_id}"[^>]*>', template)
+        assert match, f"{element_id} is not a select in the template"
+        tag = match.group(0)
+        classes = set(re.search(r'class="([^"]+)"', tag).group(1).split()) if 'class="' in tag else set()
+
+        text = STYLES.read_text(encoding="utf-8")
+        styled = bool(classes & {name for name in classes if f".{name}" in text})
+        # A select with no class at all has to be covered by an element selector.
+        assert styled or ".modal-body select" in text, f"{element_id} has no applicable style"
+
+    def test_the_context_toolbar_is_positioned(self) -> None:
+        """`place()` sets `left` and `top` from the pointer position; both are
+        ignored unless the element is positioned, so the toolbar used to appear
+        in the document flow instead of under the cursor."""
+        text = STYLES.read_text(encoding="utf-8")
+        rule = text.split(".mini-toolbar", 1)[1].split("}", 1)[0]
+        assert "position: fixed" in rule
+        assert "z-index" in rule
+
     def test_export_menu_container_exists(self, template_ids: set[str]) -> None:
         """The download menu is populated at runtime, so it needs a container."""
         assert "export-menu" in template_ids

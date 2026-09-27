@@ -128,6 +128,28 @@ llex
 The assistant sidebar reports which backend is live. Unset the variable and the
 offline extractive engine takes over automatically.
 
+`online` in that report means *an endpoint is configured*, not that something
+answered — the check performs no I/O, so the sidebar can render without waiting
+on a network call. The first sign of a runner that is configured but absent is a
+failed button, whose message names the endpoint it could not reach.
+
+### Checking a runner end to end
+
+`tests/test_llm_live.py` talks to a real runner through the same code path the
+editor uses: one call per assistant button, then the same calls again through the
+HTTP API. It asserts only that text came back, never that the text is good, so a
+small model passes.
+
+```bash
+export LLEX_LOCAL_MODEL=http://127.0.0.1:11434/v1
+export LLEX_LOCAL_MODEL_NAME=qwen2.5:0.5b
+pytest tests/test_llm_live.py -v
+```
+
+With no endpoint set the whole module skips, so it is safe to leave in an
+ordinary test run. It also covers the misconfigurations worth catching early: a
+port nothing is listening on, and a model name the runner does not have.
+
 ---
 
 ## How it works

@@ -100,6 +100,28 @@ textarea {
   color: inherit;
 }
 
+/* Every `<select>` in a dark chrome needs its background and text colour said
+   explicitly.
+
+   This is a real trap rather than a matter of taste. `color: inherit` hands a
+   select the surrounding light text, but the control itself is painted by the
+   operating system in its own light chrome, so the result is light text on a
+   light control and the selected item is invisible. The open list is drawn by
+   the OS as well and needs its own rule for the same reason.
+
+   Stated once here so that adding a select later cannot reproduce it, which is
+   exactly what happened twice: the settings dialog's paper and orientation
+   choices, and the menu bar's font family and size. */
+select {
+  background: var(--chrome-raised);
+  color: var(--chrome-fg);
+}
+
+select option {
+  background: var(--chrome-raised);
+  color: var(--chrome-fg);
+}
+
 kbd {
   margin-inline-start: auto;
   padding-inline-start: 16px;
@@ -369,6 +391,37 @@ kbd {
   font-size: 15px;
 }
 
+/* Line-of-text icons, as used by every word processor.
+
+   These replaced arrows -- left, both, right, up-and-down -- which describe a
+   direction of travel rather than the arrangement of text, and were ambiguous in
+   exactly the case that matters most: left-align and justify both end up with
+   lines touching the left margin, and the arrow said nothing about where the
+   *other* ends of those lines stop.
+
+   The shape carries the meaning. Left-align has every line starting at the same
+   x with ragged right ends; right-align mirrors that; centre is ragged on both
+   sides; justify is the only one where all four lines are the same length,
+   because that is the whole point of it. `currentColor` so a pressed or disabled
+   button recolours with the rest of the control. */
+.align-icon {
+  width: 16px;
+  height: 16px;
+  fill: currentColor;
+  flex: 0 0 auto;
+  pointer-events: none;
+}
+
+.icon-btn > svg {
+  display: block;
+}
+
+/* A pressed alignment button keeps the same fill; only the surrounding chip
+   changes, so the glyph stays legible against the active background. */
+.btn[aria-pressed="true"] .align-icon {
+  color: #fff;
+}
+
 .text-btn {
   padding: 4px 8px;
   font-weight: 500;
@@ -496,6 +549,168 @@ kbd {
   .tiptap .find-match-active {
     transition: background 0.12s ease;
   }
+}
+
+/* ==========================================================================
+   Context menu
+   ========================================================================== */
+
+/* The right-click toolbar had no rule anywhere, which had two consequences
+   beyond looking wrong. `place()` in contextmenu.js sets `left` and `top` from
+   the pointer position, and both are ignored on a statically positioned
+   element, so the toolbar appeared wherever it happened to fall in the document
+   flow rather than under the cursor. And its selects inherited `color` from the
+   page while the browser drew them with its own light chrome, so the font names
+   were invisible -- the same trap the base `select` rule above now covers. */
+.mini-toolbar,
+.context-menu {
+  position: fixed;
+  z-index: 10050;
+  display: flex;
+  align-items: stretch;
+  gap: 6px;
+  padding: 6px;
+  border: 1px solid #4a4a4a;
+  border-radius: 6px;
+  background: var(--chrome-bg);
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.5);
+  color: var(--chrome-fg);
+  user-select: none;
+}
+
+.mt-left-block,
+.mt-right-block {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.mt-row {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.mt-bottom-row {
+  justify-content: flex-start;
+}
+
+.mt-divider {
+  align-self: stretch;
+  width: 1px;
+  background: #4a4a4a;
+}
+
+.mt-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 26px;
+  height: 26px;
+  padding: 0 6px;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--chrome-fg);
+  font-size: 13px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.mt-btn:hover:not(:disabled) {
+  background: var(--chrome-hover);
+}
+
+.mt-btn:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.mt-btn[aria-pressed="true"] {
+  border-color: var(--accent-bright);
+  background: rgba(14, 99, 156, 0.5);
+  color: #fff;
+}
+
+/* Focus outline rather than a border change, so the pressed state and the focus
+   state can both be visible at once. */
+.mt-btn:focus-visible {
+  outline: 2px solid var(--accent-bright);
+  outline-offset: -2px;
+}
+
+.mt-vertical-btn {
+  height: auto;
+  min-height: 56px;
+}
+
+.mt-label {
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+/* The increase/decrease buttons are an A with a triangle, as in every word
+   processor. The triangle is superscripted so it sits on the A's shoulder
+   rather than in line with it. */
+.mt-sup {
+  font-size: 8px;
+  line-height: 0;
+  vertical-align: super;
+}
+
+.mt-bold {
+  font-weight: 700;
+}
+
+.mt-italic {
+  font-style: italic;
+  font-family: Georgia, "Times New Roman", serif;
+}
+
+.mt-underline {
+  text-decoration: underline;
+}
+
+.mt-icon-btn {
+  flex-direction: column;
+  gap: 1px;
+}
+
+.mt-icon-text {
+  line-height: 1;
+}
+
+/* The colour swatch under the A, as in Word and Google Docs. */
+.mt-color-bar {
+  display: block;
+  width: 14px;
+  height: 3px;
+  border-radius: 1px;
+}
+
+.mt-color-bar.red {
+  background: #e51400;
+}
+
+.mt-color-bar.yellow {
+  background: #fff176;
+}
+
+.mt-dropdown {
+  height: 26px;
+  padding: 2px 4px;
+  border: 1px solid #555;
+  border-radius: 4px;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.mt-font-family {
+  width: 116px;
+}
+
+.mt-font-size {
+  width: 52px;
 }
 
 /* ==========================================================================
@@ -1029,6 +1244,46 @@ body.focus-mode #sidebar {
   border-radius: 4px;
   background: #1e1e1e;
   color: #fff;
+}
+
+/* Selects need explicit colours, and this is not cosmetic.
+   The modal is dark, so `color: inherit` from the global rule hands the control
+   white text -- but a native `<select>` paints its own background with the
+   operating system's light chrome. White text on a white control is invisible,
+   and the options are drawn by the OS too, so they need saying as well. The
+   ribbon's own selects already do this; these two were missed, which is why the
+   paper and orientation names could not be read. */
+.modal-body select {
+  width: 100%;
+  padding: 5px 8px;
+  border: 1px solid #555;
+  border-radius: 4px;
+  background: #1e1e1e;
+  color: #fff;
+  cursor: pointer;
+}
+
+.modal-body select:hover {
+  border-color: #777;
+}
+
+.modal-body select:focus-visible {
+  border-color: var(--accent-bright);
+  outline: none;
+}
+
+/* The open list is rendered by the OS, so `option` must be told a colour too.
+   Without it a light-on-light list is just as unreadable as the closed control,
+   and the two are styled separately by every engine. */
+.modal-body select option {
+  background: #1e1e1e;
+  color: #fff;
+}
+
+.modal-note {
+  margin: 6px 0 0;
+  font-size: 11px;
+  color: var(--chrome-muted);
 }
 
 .modal-body input[type="color"] {
