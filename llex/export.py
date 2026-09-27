@@ -488,11 +488,15 @@ def write_rtf(document: Document, parsed: ParsedDocument) -> bytes:
             elif kind == "blockquote":
                 out.append(r"\pard\li360\fi-360 ")
                 emit(block.children)
-                out.append(r"\pard ")
+                # Reset the indent too, or it leaks into every later paragraph.
+                out.append(r"\pard\li0\fi0 ")
             elif kind in _LIST_KINDS:
                 for index, item in enumerate(block.children, start=1):
-                    marker = r"\bullet\tab" if kind == "bulletList" else r"\numbers\tab"
-                    label = f"{index}\\tab" if kind == "orderedList" else ""
+                    # A control word ends at the first non-alphanumeric, so the
+                    # trailing space is load-bearing: "\tabx" would be read as
+                    # an unknown control word rather than a tab then "x".
+                    marker = r"\bullet\tab " if kind == "bulletList" else r"\numbers\tab "
+                    label = f"{index}\\tab " if kind == "orderedList" else ""
                     out.append(rf"\pard\fi-360\li360 {marker}{label}{inline(item.runs)}")
                     emit(item.children)
                     out.append(r"\par")
@@ -506,6 +510,8 @@ def write_rtf(document: Document, parsed: ParsedDocument) -> bytes:
     color_table = "".join(
         f"\\red{r}\\green{g}\\blue{b};" for r, g, b in map(_hex_to_rgb, colors)
     )
+    # The group opened by ``{\rtf1`` is closed by the single ``}`` appended
+    # after the body, not here: everything below belongs inside it.
     header = "".join(
         (
             r"{\rtf1\ansi\ansicpg1252\deff0\deflang1033",
@@ -520,7 +526,7 @@ def write_rtf(document: Document, parsed: ParsedDocument) -> bytes:
             rf"\margr{round(page.margin_right * _TWIPS_PER_INCH)}",
             rf"\margt{round(page.margin_top * _TWIPS_PER_INCH)}",
             rf"\margb{round(page.margin_bottom * _TWIPS_PER_INCH)}",
-            "}",
+            "\n",
         )
     )
     return (header + "".join(out) + "}").encode("ascii", errors="replace")
