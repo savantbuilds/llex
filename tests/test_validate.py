@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import io
 import json
+import xml.dom.minidom
+import zipfile
 from pathlib import Path
 from typing import Any
 
@@ -14,8 +17,15 @@ from llex.document import (
     PageSetup,
     default_paper_for_locale,
 )
-from llex.export import write_html
-from llex.markup import ScaffoldRef, parse_document, to_plain_text
+from llex.export import (
+    write_docx,
+    write_epub,
+    write_html,
+    write_md,
+    write_odt,
+    write_txt,
+)
+from llex.markup import ParsedDocument, ScaffoldRef, parse_document, to_plain_text
 from llex.validate import Report, main, validate_bytes, validate_data, validate_file
 
 from .conftest import content_is_preserved
@@ -503,3 +513,163 @@ class TestBidiAndLogicalProperties:
         # different extensions.
         script = (SCRIPT_DIR / "extensions.js").read_text(encoding="utf-8")
         assert "export const DIRECTION = { dir: 'auto' }" in script
+
+class TestImages:
+    """Image handling, from the editor's markup through every export.
+
+    An image is the one block whose size the editor cannot compute from text, so
+    it is stored explicitly and every exporter has to be told what to do with it.
+    """
+
+    #: A real 2x2 RGB PNG. Not a hand-typed constant: the office exporters parse
+    #: the image header to read its native size, so a plausible-looking but
+    #: unparseable PNG makes every embedding assertion fail for the wrong reason.
+    PNG = (
+        "iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAIAAAD91JpzAAAAEElEQVR4nGP4z8AARAwQCgAf7gP9i18U1"
+        "AAAAABJRU5ErkJggg=="
+    )
+
+    def _document(self, extra: str = "") -> tuple[Document, ParsedDocument]:
+        source = f'<p>Before</p><img src="data:image/png;base64,{self.PNG}" alt="Red dot" width="120" height="80"{extra}><p>After</p>'
+        return Document(title="Pics", content=source), parse_document(source)
+
+    def test_an_image_is_parsed_as_a_block(self) -> None:
+        """Not inline: the paginator measures a block's height to decide where the
+        next page starts, and an inline image is inside a line box instead."""
+        _, parsed = self._document()
+        kinds = [block.kind for block in parsed.iter_blocks()]
+        assert kinds == ["paragraph", "image", "paragraph"]
+
+    def test_the_geometry_survives_the_parse(self) -> None:
+        _, parsed = self._document()
+        image = next(b for b in parsed.iter_blocks() if b.kind == "image")
+        assert image.number("width") == 120
+        assert image.number("height") == 80
+        assert image.attr("alt") == "Red dot"
+
+    def test_the_wrapping_survives_the_parse(self) -> None:
+        _, parsed = self._document(' data-float="right"')
+        image = next(b for b in parsed.iter_blocks() if b.kind == "image")
+        assert image.attr("data-float") == "right"
+
+    def test_absent_dimensions_read_as_none_not_zero(self) -> None:
+        """A caller has to be able to tell "not specified" from a width of zero."""
+        parsed = parse_document(f'<img src="data:image/png;base64,{self.PNG}">')
+        image = next(b for b in parsed.iter_blocks() if b.kind == "image")
+        assert image.number("width") is None
+        assert image.number("height") is None
+
+    def test_a_javascript_source_is_dropped(self) -> None:
+        """An ``img src`` is a URL the editor will load, and a ``.llex`` is data, so
+        a crafted file carrying ``javascript:`` would be a script injection."""
+        assert parse_document('<img src="javascript:alert(1)">').iter_blocks().__next__() if False else True
+        assert [b.kind for b in parse_document('<img src="javascript:alert(1)">').iter_blocks()] == []
+
+    def test_a_data_uri_that_is_not_an_image_is_dropped(self) -> None:
+        assert [b.kind for b in parse_document('<img src="data:text/html,<b>">').iter_blocks()] == []
+
+    def test_an_image_with_no_source_is_dropped(self) -> None:
+        assert [b.kind for b in parse_document('<img alt="nothing">').iter_blocks()] == []
+
+    def test_a_remote_image_is_kept(self) -> None:
+        assert [b.kind for b in parse_document('<img src="https://e.com/a.png">').iter_blocks()] == ["image"]
+
+    def test_html_export_keeps_the_size(self) -> None:
+        """Without the dimensions a reader has to wait for the file, and lays the
+        page out as though the image were not there."""
+        document, parsed = self._document()
+        html = write_html(document, parsed).decode("utf-8")
+        assert 'width="120"' in html
+        assert 'height="80"' in html
+
+    def test_html_export_emits_one_style_attribute(self) -> None:
+        """A repeated attribute is silently dropped by every parser, taking the
+        float with it, so the text would not wrap."""
+        document, parsed = self._document(' data-float="left"')
+        tag = next(line for line in write_html(document, parsed).decode("utf-8").splitlines() if "<img" in line)
+        assert tag.count("style=") == 1
+        assert "float:left" in tag
+
+    def test_the_alt_text_cannot_break_out_of_its_quotes(self) -> None:
+        source = f"""<img src="data:image/png;base64,{self.PNG}" alt='a" onload="x'>"""
+        html = write_html(Document(), parse_document(source)).decode("utf-8")
+        image_tag = next(line for line in html.splitlines() if "<img" in line)
+        # The injected quote is escaped, so the tag still has an even number of
+        # quotes and no attribute of the attacker's own.
+        assert image_tag.count('"') % 2 == 0
+        assert "&quot;" in image_tag or "'" in image_tag
+
+    def test_docx_embeds_the_bytes(self) -> None:
+        document, parsed = self._document()
+        with zipfile.ZipFile(io.BytesIO(write_docx(document, parsed))) as archive:
+            media = [n for n in archive.namelist() if n.startswith("word/media/")]
+            body = archive.read("word/document.xml").decode("utf-8")
+        assert media, "the picture was not embedded"
+        assert "<w:drawing" in body
+        assert 'descr="Red dot"' in body
+
+    def test_odt_embeds_the_bytes_and_the_wrap(self) -> None:
+        document, parsed = self._document(' data-float="right"')
+        with zipfile.ZipFile(io.BytesIO(write_odt(document, parsed))) as archive:
+            media = [n for n in archive.namelist() if n.startswith("Pictures/")]
+            content = archive.read("content.xml").decode("utf-8")
+        assert media, "the picture was not embedded"
+        assert "draw:image" in content
+        assert 'wrap="square"' in content
+
+    def test_a_truncated_image_does_not_fail_the_export(self) -> None:
+        """One bad picture must not cost the user the document."""
+        source = f'<p>x</p><img src="data:image/png;base64,{self.PNG[:40]}" alt="Broken"><p>y</p>'
+        document = Document(title="Bad", content=source)
+        parsed = parse_document(source)
+        for render in (write_docx, write_odt, write_epub):
+            assert render(document, parsed), render.__name__
+
+    def test_markdown_keeps_a_remote_image(self) -> None:
+        parsed = parse_document('<img src="https://e.com/a.png" alt="Remote">')
+        assert r"![Remote](https://e.com/a.png)" in write_md(Document(), parsed).decode("utf-8")
+
+    def test_markdown_describes_an_embedded_one(self) -> None:
+        """Markdown cannot carry a data URI, so the alt text is what survives."""
+        document, parsed = self._document()
+        assert "*[Red dot]*" in write_md(document, parsed).decode("utf-8")
+
+    def test_plain_text_carries_the_alt_text(self) -> None:
+        document, parsed = self._document()
+        assert "[image: Red dot]" in write_txt(document, parsed).decode("utf-8")
+
+    def test_an_image_survives_a_saved_file(self, tmp_path: Path) -> None:
+        document, _ = self._document()
+        loaded = Document.load(document.save(tmp_path / "pics.llex"))
+        assert "<img" in loaded.content
+        assert 'width="120"' in loaded.content
+
+
+class TestEpubIsWellFormedXhtml:
+    """EPUB content is XHTML, where a bare void element is a parse error.
+
+    This was already wrong before images existed: `<hr>` was never closed, so
+    every EPUB LLex produced was invalid XML. Reading systems are lenient about
+    it; epubcheck is not.
+    """
+
+    def _assert_parses(self, source: str) -> None:
+        document = Document(title="T", content=source)
+        parsed = parse_document(source)
+        with zipfile.ZipFile(io.BytesIO(write_epub(document, parsed))) as archive:
+            for entry in archive.namelist():
+                if entry.endswith((".xml", ".xhtml")):
+                    # The bytes come from this exporter, not from a user, so the
+                    # attack surface ruff warns about does not apply here.
+                    xml.dom.minidom.parseString(archive.read(entry))  # noqa: S318
+
+    def test_a_rule_alone_is_well_formed(self) -> None:
+        self._assert_parses("<p>a</p><hr><p>b</p>")
+
+    def test_an_image_is_well_formed(self) -> None:
+        self._assert_parses(f'<img src="data:image/png;base64,{TestImages.PNG}" alt="d" width="10" height="10">')
+
+    def test_the_standalone_page_keeps_the_bare_tag(self) -> None:
+        """It is served as text/html, where the slash is unnecessary."""
+        document = Document(title="T", content="<p>a</p><hr>")
+        assert "<hr>" in write_html(document, parse_document(document.content)).decode("utf-8")

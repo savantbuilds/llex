@@ -30,6 +30,7 @@ without touching the filesystem.
 
 from __future__ import annotations
 
+import base64
 import hashlib
 import html as html_module
 import re
@@ -210,6 +211,17 @@ def write_md(document: Document, parsed: ParsedDocument) -> bytes:
             kind = block.kind
             if kind == "horizontalRule":
                 lines.extend([f"{quote}---", ""])
+            elif kind == "image":
+                # Markdown can carry a remote image but not a data URI, so a
+                # data-source image becomes its alt text rather than a link
+                # nothing can fetch.
+                source = block.attr("src")
+                alt = block.attr("alt").replace("]", r"\]")
+                if source.startswith(("http://", "https://")):
+                    lines.append(f"{quote}{pad}![{alt}]({source})")
+                else:
+                    lines.append(f"{quote}{pad}*[{alt or 'image'}]*")
+                lines.append("")
             elif kind in _LIST_KINDS:
                 for index, item in enumerate(block.children, start=1):
                     marker = "-" if kind == "bulletList" else f"{index}."
@@ -292,22 +304,82 @@ def _html_inline(runs: Iterable[TextRun]) -> str:
     return "".join(out)
 
 
-def _html_body(parsed: ParsedDocument, *, page_breaks: bool = False) -> str:
+def _html_image(block: Block, *, xhtml: bool = False) -> str:
+    """One image, as HTML.
+
+    The width and height are emitted whenever the editor knew them, because that
+    is what reserves the space: a reader lays the page out from the markup, and
+    an image with no intrinsic size until it loads is exactly the case that
+    makes a page break land in the wrong place.
+
+    All styling is collected into a *single* `style` attribute. Repeating the
+    attribute looks harmless and is not: every HTML parser takes the first one
+    and ignores the rest, so a second `style` for the float would be dropped and
+    the text would not wrap at all.
+    """
+    declarations: list[str] = ["max-width:100%"]
+    attributes = [f'src="{html_module.escape(block.attr("src"), quote=True)}"']
+    attributes.append(f'alt="{html_module.escape(block.attr("alt"), quote=True)}"')
+
+    title = block.attr("title")
+    if title:
+        attributes.append(f'title="{html_module.escape(title, quote=True)}"')
+
+    width = block.number("width")
+    if width:
+        attributes.append(f'width="{width}"')
+        declarations.append("height:auto")
+
+    height = block.number("height")
+    if height:
+        attributes.append(f'height="{height}"')
+
+    wrap = block.attr("data-float")
+    if wrap in {"left", "right"}:
+        attributes.append(f'data-float="{wrap}"')
+        declarations.append(f"float:{wrap};margin-inline-end:10px")
+
+    if block.attr("data-display") == "inline":
+        attributes.append('data-display="inline"')
+        declarations.append("display:inline;vertical-align:baseline")
+
+    attributes.append(f'style="{";".join(declarations)}"')
+    # XHTML has no void elements, so `img` has to close itself or the whole
+    # content document is a parse error.
+    return f"<img {' '.join(attributes)}{' />' if xhtml else '>'}"
+
+
+def _html_body(
+    parsed: ParsedDocument,
+    *,
+    page_breaks: bool = False,
+    xhtml: bool = False,
+) -> str:
     """Render the parsed tree as an HTML fragment.
 
     With ``page_breaks`` the blocks of each page are wrapped in a section
     carrying a forced break, so the page boundaries the editor computed survive
     into a reader that paginates for itself. Off by default for the fragment
     form, which is embedded in a larger document; the standalone page turns it on.
+
+    ``xhtml`` self-closes the void elements. EPUB content is XHTML, where a bare
+    ``<hr>`` is a parse error rather than a short tag -- the standalone HTML page
+    does not want the slash, because it is served as text/html.
     """
     parts: list[str] = []
+
+    def void(tag: str) -> str:
+        """A void element, self-closed where the output format requires it."""
+        return f"<{tag} />" if xhtml else f"<{tag}>"
 
     def emit(blocks: Sequence[Block]) -> None:
         for block in _iter_leaf_blocks(blocks):
             kind = block.kind
             align = f' style="text-align: {block.align}"' if block.align else ""
             if kind == "horizontalRule":
-                parts.append("<hr>")
+                parts.append(void("hr"))
+            elif kind == "image":
+                parts.append(_html_image(block, xhtml=xhtml))
             elif kind == "heading":
                 level = min(max(block.level or 1, 1), 6)
                 parts.append(f"<h{level}{align}>{_html_inline(block.runs)}</h{level}>")
@@ -579,6 +651,19 @@ def write_rtf(document: Document, parsed: ParsedDocument) -> bytes:
     return (header + "".join(out) + "}").encode("ascii", errors="replace")
 
 
+#: CSS pixels per inch, matching the browser and the page geometry.
+_DPI: Final = 96.0
+
+#: File extension to the media type `odfpy` needs in order to register a picture.
+_ODF_MEDIA_TYPES: Final[dict[str, str]] = {
+    "png": "image/png",
+    "jpeg": "image/jpeg",
+    "gif": "image/gif",
+    "bmp": "image/bmp",
+    "tiff": "image/tiff",
+}
+
+
 # --------------------------------------------------------------------------- #
 # DOCX
 # --------------------------------------------------------------------------- #
@@ -611,6 +696,84 @@ def _highlight_enum(index: Any, color: str | None) -> Any:
     if not color:
         return None
     return getattr(index, _HIGHLIGHT_ALIASES.get(color.lower(), ""), None)
+
+
+def _image_bytes(source: str) -> tuple[bytes, str] | None:
+    """Decode a data-URI image into its bytes and a format name.
+
+    Returns ``None`` for anything that is not a data URI, and for a media type
+    the office formats cannot embed. Callers substitute a text placeholder
+    rather than failing the whole export, because one unembeddable image should
+    not cost the user their document.
+    """
+    if not source.startswith("data:") or ";base64," not in source:
+        return None
+    header, _, payload = source.partition(";base64,")
+    media = header[len("data:") :].strip().lower()
+    extensions = {
+        "image/png": "png",
+        "image/jpeg": "jpeg",
+        "image/jpg": "jpeg",
+        "image/gif": "gif",
+        "image/bmp": "bmp",
+        "image/tiff": "tiff",
+    }
+    suffix = extensions.get(media)
+    if suffix is None:
+        # SVG is a vector format neither python-docx nor odfpy will embed; it
+        # would have to be rasterised first, which is a different feature.
+        return None
+    try:
+        return base64.b64decode(payload, validate=True), suffix
+    except (ValueError, TypeError):
+        return None
+
+
+def _add_docx_image(package: Any, block: Block) -> bool:
+    """Embed one image in a ``python-docx`` package. True when it worked.
+
+    The picture is inserted *inline* even when the editor had it wrapped, because
+    that is the one operation python-docx supports properly. Hand-writing the
+    ``wp:anchor`` element that floating text needs is possible, and is exactly
+    the kind of code that produces a file Word refuses to open; a wrapped image
+    arriving on its own line is a visible, harmless difference, an unopenable
+    document is not.
+    """
+    from docx.shared import Inches as _Inches
+
+    decoded = _image_bytes(block.attr("src"))
+    if decoded is None:
+        return False
+    data, _suffix = decoded
+    try:
+        stream = package.add_picture(BytesIO(data), width=_Inches(_block_inches(block, 6.0)))
+    except Exception:
+        # `add_picture` parses the image header to read its native size, so a
+        # truncated or mislabelled file raises. Letting that out would fail the
+        # whole export and cost the user the document over one bad picture, so
+        # the caller falls back to a text placeholder instead.
+        return False
+    # The alt text lives on the shape's properties, not on the paragraph, and it
+    # is what a screen reader announces, so it is worth the private access.
+    try:
+        properties = stream._inline.docPr
+        properties.set("descr", block.attr("alt"))
+        properties.set("name", block.attr("alt") or "Image")
+    except AttributeError:  # pragma: no cover - depends on the python-docx version
+        pass
+    return True
+
+
+def _block_inches(block: Block, default: float) -> float:
+    """A block's stored pixel width as inches, for the office formats.
+
+    Office formats measure in EMU/inches, the editor stores pixels, and the
+    conversion is the 96-per-inch the whole page geometry already uses.
+    """
+    width = block.number("width")
+    if not width:
+        return default
+    return min(width / _DPI, 8.0)
 
 
 def write_docx(document: Document, parsed: ParsedDocument) -> bytes:
@@ -667,6 +830,13 @@ def write_docx(document: Document, parsed: ParsedDocument) -> bytes:
             kind = block.kind
             if kind == "horizontalRule":
                 package.add_paragraph("_" * 40)
+            elif kind == "image":
+                # Word embeds the bytes, so a data-URI image becomes a real
+                # picture in the file rather than a link that resolves to
+                # nothing. A remote source is left as a link Word can fetch.
+                added = _add_docx_image(package, block)
+                if not added:
+                    package.add_paragraph(f"[{block.attr('alt') or 'image'}]")
             elif kind == "heading":
                 level = min(max(block.level or 1, 1), 6)
                 paragraph = package.add_paragraph(style=f"Heading {level}")
@@ -714,6 +884,63 @@ def write_docx(document: Document, parsed: ParsedDocument) -> bytes:
 # --------------------------------------------------------------------------- #
 # ODT
 # --------------------------------------------------------------------------- #
+
+
+def _odt_image(package: Any, block: Block) -> Any:
+    """One image as an ODF frame, or ``None`` when it cannot be embedded.
+
+    `odfpy` models a picture as a `draw:frame` holding a `draw:image`, and the
+    frame itself carries the wrapping -- so the editor's wrap mode maps onto a
+    first-class ODF property rather than onto a hand-built paragraph.
+
+    A remote source is not fetched: the export runs offline and must not make a
+    network request to write a file. Such an image takes the placeholder path,
+    which at least tells the reader what was there.
+    """
+    from odf.draw import Frame, Image as OdfImage
+    from odf.namespaces import DRAWNS, STYLENS, SVGNS, TEXTNS
+
+    decoded = _image_bytes(block.attr("src"))
+    if decoded is None:
+        return None
+    data, _suffix = decoded
+
+    width = block.number("width") or 400
+    height = block.number("height") or 300
+    # ODF measures in centimetres; the editor stores pixels at 96 per inch.
+    width_cm = max(0.1, round(width / _DPI * 2.54, 3))
+    height_cm = max(0.1, round(height / _DPI * 2.54, 3))
+
+    # `addPictureFromString` is odfpy's own route: it names the file inside the
+    # package and registers it in the manifest, which hand-building the href
+    # would not.
+    uri = package.addPictureFromString(data, _ODF_MEDIA_TYPES[_suffix])
+    image = OdfImage(href=uri)
+    alt = block.attr("alt")
+    if alt:
+        image.setAttrNS(DRAWNS, "title", alt)
+        image.setAttrNS(SVGNS, "desc", alt)
+
+    wrap = block.attr("data-float")
+    frame = Frame(width=f"{width_cm}cm", height=f"{height_cm}cm")
+    if wrap in {"left", "right"}:
+        # Anchored to the paragraph and wrapping, positioned against the page
+        # margin on the chosen side -- which is what "text wraps down the right"
+        # means in ODF.
+        frame.setAttrNS(TEXTNS, "anchor-type", "paragraph")
+        frame.setAttrNS(STYLENS, "wrap", "square")
+        frame.setAttrNS(STYLENS, "run-through", "none")
+        frame.setAttrNS(STYLENS, "vertical-pos", "top")
+        frame.setAttrNS(STYLENS, "vertical-rel", "paragraph")
+        frame.setAttrNS(STYLENS, "horizontal-pos", "left" if wrap == "left" else "right")
+        frame.setAttrNS(STYLENS, "horizontal-rel", "margin")
+    else:
+        # `as-char` is what puts a picture on the text baseline; a block image
+        # still wants that rather than a floating frame, so it occupies one line
+        # of its own instead of overlapping the text.
+        frame.setAttrNS(TEXTNS, "anchor-type", "as-char")
+    frame.addElement(image)
+    return frame
 
 
 def write_odt(document: Document, parsed: ParsedDocument) -> bytes:
@@ -849,6 +1076,15 @@ def write_odt(document: Document, parsed: ParsedDocument) -> bytes:
                 paragraph = P(stylename=style_name)
                 inline(paragraph, runs)
                 package.text.addElement(paragraph)
+            elif kind == "image":
+                # ODF has first-class frames with real text wrapping, so a
+                # wrapped image survives as a wrapped image here rather than
+                # being flattened to its own line.
+                frame = _odt_image(package, block)
+                if frame is None:
+                    package.text.addElement(P(stylename=style_name, text=f"[{block.attr('alt') or 'image'}]"))
+                else:
+                    package.text.addElement(frame)
             elif kind == "blockquote":
                 for child in _iter_leaf_blocks(block.children):
                     package.text.addElement(_build_paragraph(child, style_name))
@@ -921,7 +1157,7 @@ def write_epub(document: Document, parsed: ParsedDocument) -> bytes:
         "<head><title>"
         f"{escaped}</title>"
         '<link rel="stylesheet" type="text/css" href="style.css"/></head>\n'
-        f"<body>\n{_html_body(parsed, page_breaks=True)}\n</body>\n</html>\n"
+        f"<body>\n{_html_body(parsed, page_breaks=True, xhtml=True)}\n</body>\n</html>\n"
     )
     container = (
         '<?xml version="1.0" encoding="utf-8"?>\n'

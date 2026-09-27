@@ -190,7 +190,102 @@ window.AbortController = AbortController;
     return out;
   })();
 
-  // Run last of all: this also mutates the document.
+  // Every probe below is wrapped. A probe that throws must not be able to take
+  // the harness down: a thrown probe skips the `autosave.stop()` further down,
+  // the autosave timers then keep Node's event loop alive, and the whole run
+  // hangs instead of failing. That cost an afternoon to find, so it is prevented
+  // rather than remembered.
+  function probe(body) {
+    try {
+      return body();
+    } catch (e) {
+      return { threw: String((e && e.stack) || e).slice(0, 800) };
+    }
+  }
+
+  // Toolbar tools, driven through the real buttons.
+  result.toolCheck = probe(function () {
+    if (!window.llex || !window.llex.editor) return { skipped: true };
+    var ed = window.llex.editor;
+    var out = {};
+    var click = function (id) {
+      var button = dom.window.document.getElementById(id);
+      if (button) button.click();
+      return Boolean(button);
+    };
+
+    out.hasIndentIncrease = click('btn-indent-increase');
+    out.indentAfterIncrease = ed.getAttributes('paragraph').indent;
+    out.hasIndentDecrease = click('btn-indent-decrease');
+    out.indentAfterDecrease = ed.getAttributes('paragraph').indent;
+    // Clamped rather than allowed to run away, because the stylesheet only
+    // describes so many levels.
+    for (var up = 0; up < 20; up += 1) ed.commands.increaseIndent();
+    out.indentClamped = ed.getAttributes('paragraph').indent;
+    for (var down = 0; down < 30; down += 1) ed.commands.decreaseIndent();
+    out.indentClampedLow = ed.getAttributes('paragraph').indent;
+
+    out.hasRule = click('btn-horizontal-rule');
+    out.ruleRendered = ed.getHTML().indexOf('<hr') !== -1;
+    ed.commands.undo();
+
+    // A link applies to selected text; with a collapsed caret it only sets the mark
+    // for whatever is typed next, and the HTML would legitimately not change.
+    ed.commands.selectAll();
+    out.hasLink = click('btn-link');
+    var doc = dom.window.document;
+    out.linkRowShown = doc.getElementById('link-row').hidden === false;
+    var input = doc.getElementById('link-url');
+    if (input) {
+      // A bare address, as a user would type it.
+      input.value = 'example.com/page';
+      doc.getElementById('link-apply').click();
+    }
+    out.linkMade = ed.getHTML().indexOf('https://example.com/page') !== -1;
+    out.linkRowHidden = doc.getElementById('link-row').hidden === true;
+    ed.commands.undo();
+
+    out.hasClearFormat = click('btn-clear-format');
+    out.cleared = ed.getHTML().indexOf('<strong') === -1 && ed.getHTML().indexOf('<b') === -1;
+
+    out.hasPageBreak = click('btn-page-break');
+    out.pageBreakSet = ed.getAttributes('paragraph').breakBefore === true;
+    ed.commands.undo();
+
+    out.hasImage = click('btn-image');
+    out.imagePanelOpened = doc.getElementById('image-panel').hidden === false;
+    out.ribbonHasImageNode = ed.schema.nodes.image !== undefined;
+    out.ribbonHasLinkMark = ed.schema.marks.link !== undefined;
+    return out;
+  });
+
+  // A dead button is a `undefined` command rather than an error, so it is worth
+  // checking that every command the ribbon can call actually exists.
+  result.commandCheck = probe(function () {
+    var ed = window.llex.editor;
+    if (!ed) return { skipped: true };
+    var names = ['increaseIndent', 'decreaseIndent', 'setIndent', 'setImage', 'setImageSize',
+      'setImageFloat', 'setPageBreakBefore', 'setLink', 'unsetLink', 'setHorizontalRule'];
+    var out = {};
+    names.forEach(function (name) { out[name] = typeof ed.commands[name]; });
+    return out;
+  });
+
+  result.imageCheck = probe(function () {
+    var panel = window.llex.imagePanel;
+    if (!panel) return { skipped: 'no panel' };
+    var out = { hasPanel: true, printableWidth: Math.round(panel.printableWidth) };
+    panel.open();
+    var opened = panel.isOpen();
+    panel.close();
+    out.closesAgain = opened && !panel.isOpen();
+    out.syncWithoutSelection = (function () {
+      panel.sync();
+      return true;
+    })();
+    return out;
+  });
+
   result.undoCheck = (function () {
     if (!window.llex || !window.llex.editor) return { skipped: true };
     var ed = window.llex.editor;
@@ -621,3 +716,107 @@ class TestChrome:
     def test_the_zoom_indicator_shows_a_level(self, boot_result: dict[str, object]) -> None:
         assert boot_result.get("zoomLabel") == "100%"
 
+
+@pytest.fixture(scope="module")
+def tool_result(boot_result: dict[str, object]) -> dict[str, object]:
+    """The toolbar probe's report from the single boot."""
+    return dict(boot_result.get("toolCheck") or {})
+
+
+class TestToolbarTools:
+    """The tools added to the ribbon, driven through the real buttons."""
+
+    def test_the_probe_ran(self, tool_result: dict[str, object]) -> None:
+        assert tool_result, "no toolbar probe was reported"
+        assert tool_result.get("skipped") is not True
+
+    @pytest.mark.parametrize(
+        "control", ["hasIndentIncrease", "hasIndentDecrease", "hasRule", "hasLink", "hasClearFormat", "hasPageBreak", "hasImage"]
+    )
+    def test_each_button_exists_and_is_wired(self, tool_result: dict[str, object], control: str) -> None:
+        assert tool_result.get(control) is True, control
+
+    def test_indent_goes_up_and_down(self, tool_result: dict[str, object]) -> None:
+        assert tool_result.get("indentAfterIncrease") == 1
+        assert tool_result.get("indentAfterDecrease") == 0
+
+    def test_a_horizontal_rule_is_inserted(self, tool_result: dict[str, object]) -> None:
+        assert tool_result.get("ruleRendered") is True
+
+    def test_a_bare_address_becomes_https(self, tool_result: dict[str, object]) -> None:
+        """Typing `example.com` and getting a dead relative link is the usual way a
+        link box disappoints people."""
+        assert tool_result.get("linkMade") is True
+        assert tool_result.get("linkRowHidden") is True
+
+    def test_clear_formatting_removes_the_marks(self, tool_result: dict[str, object]) -> None:
+        assert tool_result.get("cleared") is True
+
+    def test_a_forced_page_break_is_recorded(self, tool_result: dict[str, object]) -> None:
+        assert tool_result.get("pageBreakSet") is True
+
+    def test_the_indent_is_clamped(self, tool_result: dict[str, object]) -> None:
+        # The stylesheet only describes eight levels, so a stylesheet that runs
+        # out would silently stop indenting.
+        assert tool_result.get("indentClamped") == 8
+        assert tool_result.get("indentClampedLow") == 0
+
+    def test_the_image_panel_opens_from_the_ribbon(self, tool_result: dict[str, object]) -> None:
+        assert tool_result.get("imagePanelOpened") is True
+
+    def test_the_image_node_is_in_the_schema(self, tool_result: dict[str, object]) -> None:
+        """A block the paginator has to measure, so it must be a node and not markup."""
+        assert tool_result.get("ribbonHasImageNode") is True
+
+    def test_the_link_mark_is_in_the_schema(self, tool_result: dict[str, object]) -> None:
+        assert tool_result.get("ribbonHasLinkMark") is True
+@pytest.fixture(scope="module")
+def command_result(boot_result: dict[str, object]) -> dict[str, object]:
+    """Which of the ribbon's commands actually exist."""
+    return dict(boot_result.get("commandCheck") or {})
+
+
+class TestNoDeadCommands:
+    """A dead button is `undefined` rather than an error, so nothing complains.
+
+    This is the check that would have caught the indent, image and page-break
+    commands being written but never registered: the buttons were present, the
+    markup was right, and clicking did nothing.
+    """
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "increaseIndent", "decreaseIndent", "setIndent",
+            "setImage", "setImageSize", "setImageFloat",
+            "setPageBreakBefore", "setLink", "unsetLink", "setHorizontalRule",
+        ],
+    )
+    def test_the_command_exists(self, command_result: dict[str, object], command: str) -> None:
+        assert command_result.get("skipped") is not True
+        assert command_result.get("threw") is None, command_result.get("threw")
+        assert command_result.get(command) == "function", f"{command} is not registered"
+
+
+@pytest.fixture(scope="module")
+def image_result(boot_result: dict[str, object]) -> dict[str, object]:
+    """The image panel's report from the single boot."""
+    return dict(boot_result.get("imageCheck") or {})
+
+
+class TestImagePanel:
+    def test_the_panel_exists(self, image_result: dict[str, object]) -> None:
+        assert image_result.get("hasPanel") is True
+        assert image_result.get("threw") is None, image_result.get("threw")
+
+    def test_it_opens_and_closes(self, image_result: dict[str, object]) -> None:
+        assert image_result.get("closesAgain") is True
+
+    def test_it_copes_with_no_selection(self, image_result: dict[str, object]) -> None:
+        """Syncing with no image selected must not throw; the panel just disables
+        its own controls."""
+        assert image_result.get("syncWithoutSelection") is True
+
+    def test_the_printable_width_is_positive(self, image_result: dict[str, object]) -> None:
+        """Every size clamp is relative to it, so zero would silently break them."""
+        assert image_result.get("printableWidth", 0) > 0

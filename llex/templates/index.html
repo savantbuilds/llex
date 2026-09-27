@@ -160,6 +160,13 @@
         <button type="button" id="btn-page-break" class="btn icon-btn" title="Insert Page Break (Ctrl+Enter)" aria-label="Insert page break"><svg class="align-icon" viewBox="0 0 16 16" aria-hidden="true" focusable="false"><rect x="1" y="1" width="14" height="14" rx="1" fill="none" stroke="currentColor" stroke-width="1.2" stroke-dasharray="2 1.6"/><rect x="3" y="10" width="10" height="1.2"/></svg></button>
       </div>
 
+      <div id="link-row" class="link-row" hidden>
+        <label class="visually-hidden" for="link-url">Link address</label>
+        <input type="text" id="link-url" placeholder="example.com/page" spellcheck="false" autocomplete="off">
+        <button type="button" id="link-apply" class="btn btn-secondary">Apply</button>
+        <button type="button" id="link-remove" class="btn btn-secondary">Remove</button>
+      </div>
+
       <span class="separator" role="separator" aria-orientation="vertical"></span>
 
       <div class="toolbar-group" role="group" aria-label="Editing">
@@ -359,11 +366,64 @@
       <input type="color" id="theme-border" value="#444444">
     </div>
 
-    <div class="modal-actions">
-      <button type="button" id="btn-settings-cancel" class="btn btn-secondary">Cancel</button>
-      <button type="button" id="btn-settings-save" class="btn btn-primary">Save</button>
-    </div>
+  <div class="modal-actions">
+    <button type="button" id="btn-settings-cancel" class="btn btn-secondary">Cancel</button>
+    <button type="button" id="btn-settings-save" class="btn btn-primary">Save</button>
   </div>
+</div>
+
+<!-- Image panel -->
+<div id="image-panel" class="image-panel" role="dialog" aria-label="Image" hidden>
+  <div class="image-panel-head">
+    <h2>Image</h2>
+    <button type="button" id="image-close" class="btn icon-btn" title="Close (Esc)" aria-label="Close image panel">&#10005;</button>
+  </div>
+
+  <div id="image-drop" class="image-drop">
+    <input type="file" id="image-file" accept="image/png,image/jpeg,image/gif,image/webp,image/bmp,image/svg+xml" class="visually-hidden">
+    <p><strong>Choose a file</strong> or drop an image here.</p>
+    <p class="image-hint">PNG, JPEG, GIF, WebP, BMP or SVG. The image is measured before it is placed so the page breaks land correctly.</p>
+  </div>
+
+  <div class="image-row">
+    <label for="image-width">Width (px)</label>
+    <input type="number" id="image-width" min="16" step="1" disabled>
+  </div>
+
+  <div class="image-row" role="group" aria-label="Size presets">
+    <span class="image-label">Size</span>
+    <span id="image-size-presets" class="image-presets">
+      <button type="button" class="btn btn-secondary image-preset" data-fraction="0.25" title="Quarter of the text width">25%</button>
+      <button type="button" class="btn btn-secondary image-preset" data-fraction="0.5" title="Half the text width">50%</button>
+      <button type="button" class="btn btn-secondary image-preset" data-fraction="0.75" title="Three quarters of the text width">75%</button>
+      <button type="button" class="btn btn-secondary image-preset" data-fraction="1" title="Full text width">100%</button>
+    </span>
+  </div>
+
+  <div class="image-row">
+    <label for="image-wrap">Wrap</label>
+    <select id="image-wrap" class="dropdown" disabled>
+      <option value="none">In line with text</option>
+      <option value="left">Wrap left</option>
+      <option value="right">Wrap right</option>
+    </select>
+  </div>
+
+  <div class="image-row">
+    <label for="image-display">Position</label>
+    <select id="image-display" class="dropdown" disabled>
+      <option value="block">On its own line</option>
+      <option value="inline">With text</option>
+    </select>
+  </div>
+
+  <div class="image-row">
+    <label for="image-alt">Alt text</label>
+    <input type="text" id="image-alt" placeholder="Describe the image" disabled>
+  </div>
+
+  <p id="image-status" class="image-hint" role="status" aria-live="polite">Choose a file, or drop an image here.</p>
+</div>
 </div>
 
 <noscript>

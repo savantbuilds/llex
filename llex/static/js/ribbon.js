@@ -6,6 +6,8 @@
  * from `editor.isActive`, so the two cannot disagree.
  */
 
+import { MAX_INDENT_LEVEL } from './extensions.js';
+
 const FONT_SIZES = [8, 10, 11, 12, 14, 18, 24, 36];
 
 /** Shown when the selection carries no explicit character formatting. */
@@ -51,9 +53,10 @@ export function styleForHeading(editor) {
 /**
  * Attach the ribbon.
  * @param {import('@tiptap/core').Editor} editor
+ * @param {{onFind?: () => void, onImage?: () => void, onStatus?: (message: string) => void}} [hooks]
  * @returns {{sync: () => void}}
  */
-export function createRibbon(editor) {
+export function createRibbon(editor, hooks = {}) {
   const bind = (id, command) => {
     const button = document.getElementById(id);
     if (button) button.addEventListener('click', command);
@@ -73,9 +76,98 @@ export function createRibbon(editor) {
     ['btn-align-justify', () => editor.chain().focus().setTextAlign('justify').run()],
     ['btn-bullet', () => editor.chain().focus().toggleBulletList().run()],
     ['btn-number', () => editor.chain().focus().toggleOrderedList().run()],
+    ['btn-indent-increase', () => editor.chain().focus().increaseIndent().run()],
+    ['btn-indent-decrease', () => editor.chain().focus().decreaseIndent().run()],
+    ['btn-horizontal-rule', () => editor.chain().focus().setHorizontalRule().run()],
+    [
+      'btn-clear-format',
+      () => {
+        // Character formatting is marks and block formatting is attributes, so
+        // clearing has to do both. `unsetAllMarks` alone leaves a centred,
+        // indented, highlighted paragraph behind, which is not what "clear
+        // formatting" means in any word processor.
+        editor
+          .chain()
+          .focus()
+          .unsetAllMarks()
+          .unsetMark('textStyle', { fontFamily: null })
+          .unsetMark('textStyle', { fontSize: null })
+          .setTextAlign('left')
+          .setIndent(0)
+          .run();
+      },
+    ],
+    ['btn-page-break', () => editor.chain().focus().setPageBreakBefore(true).run()],
+    ['btn-image', () => hooks.onImage && hooks.onImage()],
+    ['btn-find', () => hooks.onFind && hooks.onFind()],
   ];
 
   const buttons = new Map(commands.map(([id, command]) => [id, bind(id, command)]));
+  const status = hooks.onStatus || (() => {});
+
+  // -- Link --------------------------------------------------------------- //
+
+  bind('btn-link', () => toggleLink());
+  const linkInput = document.getElementById('link-url');
+  const linkApply = document.getElementById('link-apply');
+  const linkRemove = document.getElementById('link-remove');
+  const linkRow = document.getElementById('link-row');
+
+  const setLinkRowVisible = (visible) => {
+    if (linkRow) linkRow.hidden = !visible;
+  };
+
+  /**
+   * Apply or remove a link on the selection.
+   *
+   * A bare address is assumed to be https, because typing `example.com` and
+   * having it silently become a dead relative link is the most common way a
+   * word processor's link box disappoints people.
+   *
+   * @param {string|null} href
+   */
+  function applyLink(href) {
+    if (href === null) {
+      editor.chain().focus().unsetLink().run();
+      status('Link removed');
+      return;
+    }
+    const trimmed = String(href).trim();
+    if (!trimmed) return;
+    const url = /^[a-z][a-z0-9+.-]*:/i.test(trimmed) ? trimmed : `https://${trimmed}`;
+    editor.chain().focus().setLink({ href: url }).run();
+    status(`Linked to ${url}`);
+  }
+
+  function toggleLink() {
+    if (editor.isActive('link')) {
+      applyLink(null);
+      return;
+    }
+    setLinkRowVisible(true);
+    if (linkInput) {
+      linkInput.value = editor.getAttributes('link').href || '';
+      linkInput.focus();
+      linkInput.select();
+    }
+  }
+
+  linkApply?.addEventListener('click', () => {
+    applyLink(linkInput?.value || '');
+    setLinkRowVisible(false);
+  });
+  linkRemove?.addEventListener('click', () => {
+    applyLink(null);
+    setLinkRowVisible(false);
+  });
+  linkInput?.addEventListener('keydown', (event) => {
+    if (event.key === 'Enter') {
+      event.preventDefault();
+      applyLink(linkInput.value);
+      setLinkRowVisible(false);
+    }
+    if (event.key === 'Escape') setLinkRowVisible(false);
+  });
 
   const styleDropdown = document.getElementById('style-dropdown');
   if (styleDropdown) {
@@ -138,6 +230,16 @@ export function createRibbon(editor) {
     markActive(buttons.get('btn-align-justify'), editor.isActive({ textAlign: 'justify' }));
     markActive(buttons.get('btn-bullet'), editor.isActive('bulletList'));
     markActive(buttons.get('btn-number'), editor.isActive('orderedList'));
+    markActive(buttons.get('btn-link'), editor.isActive('link'));
+    markActive(buttons.get('btn-page-break'), Boolean(editor.getAttributes('paragraph').breakBefore));
+    // Indent has no "active" state in the usual sense -- it is a level, not a
+    // toggle -- but the decrease button is useless at level zero, so it is
+    // disabled there rather than silently doing nothing.
+    const indent = Number(editor.getAttributes('paragraph').indent ?? 0);
+    const decrease = buttons.get('btn-indent-decrease');
+    if (decrease) decrease.disabled = indent <= 0;
+    const increase = buttons.get('btn-indent-increase');
+    if (increase) increase.disabled = indent >= MAX_INDENT_LEVEL;
 
     const undo = buttons.get('btn-undo');
     if (undo) undo.disabled = !editor.can().undo();
@@ -157,5 +259,5 @@ export function createRibbon(editor) {
     }
   }
 
-  return { sync, stepFontSize, applyFontFamily, applyFontSize };
+  return { sync, stepFontSize, applyFontFamily, applyFontSize, applyLink, toggleLink };
 }

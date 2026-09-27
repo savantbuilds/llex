@@ -6,7 +6,8 @@
  * and exported -- instead of being a purely visual effect.
  */
 
-import { Node, Mark, mergeAttributes } from '@tiptap/core';
+import { Extension, Node, Mark, mergeAttributes } from '@tiptap/core';
+import Paragraph from '@tiptap/extension-paragraph';
 import { TextStyleKit } from '@tiptap/extension-text-style';
 
 /**
@@ -120,6 +121,111 @@ export const Heading = Node.create({
   },
 });
 
+/**
+ * Block indentation, as an attribute on the paragraph.
+ *
+ * TipTap's own indent extension is not a dependency, and a paragraph attribute
+ * is the better fit here anyway: the indent has to survive a save/load round
+ * trip as a number the backend can read, and it has to be measured by the
+ * paginator as part of the block's own width rather than applied as a wrapper.
+ *
+ * Stored as a level rather than a length so the same document looks the same at
+ * any zoom and on any paper size, and so the HTML stays readable.
+ */
+export const MAX_INDENT_LEVEL = 8;
+
+/** Inches of indent per level, matching Word's default tab geometry. */
+export const INDENT_INCHES = 0.5;
+
+export const IndentableParagraph = Paragraph.extend({
+  addAttributes() {
+    return {
+      ...this.parent?.(),
+      indent: {
+        default: 0,
+        parseHTML: (element) => {
+          const raw = element.getAttribute('data-indent');
+          const level = Number.parseInt(raw ?? '', 10);
+          return Number.isFinite(level) ? clampIndent(level) : 0;
+        },
+        // Only a non-zero indent is written, so the common case adds no
+        // attribute noise and a file diff is not littered with `data-indent="0"`.
+        renderHTML: (attributes) =>
+          attributes.indent ? { 'data-indent': String(attributes.indent) } : {},
+      },
+      breakBefore: {
+        default: false,
+        parseHTML: (element) => element.getAttribute('data-page-break-before') === 'true',
+        renderHTML: (attributes) =>
+          attributes.breakBefore ? { 'data-page-break-before': 'true' } : {},
+      },
+    };
+  },
+});
+
+/** Keep an indent level inside the range the stylesheet has rules for. */
+export function clampIndent(level) {
+  const value = Number.parseInt(String(level), 10);
+  if (!Number.isFinite(value)) return 0;
+  return Math.min(MAX_INDENT_LEVEL, Math.max(0, value));
+}
+
+/** An image, with the geometry a paginating editor needs before it loads.
+ *
+ * The width and height are stored explicitly rather than left to the browser.
+ * That is not a convenience: the paginator decides where pages break by measuring
+ * rendered height, so an image whose size is unknown until it decodes reports
+ * zero height, the page it sits on measures as fitting, and the break lands in
+ * the wrong place. Once the image arrives the page grows and every break below
+ * it is wrong. Storing the size lets the space be reserved on the first paint,
+ * and `aspect-ratio` holds it even before the bytes arrive.
+ *
+ * `float` is the text wrapping. `none` is a block of its own; `left` and `right`
+ * let the following text flow beside it, which is what a Word processor does for
+ * an inline picture.
+ */
+export const Image = Node.create({
+  name: 'image',
+  group: 'block',
+  atom: true,
+  draggable: true,
+  selectable: true,
+  defining: true,
+
+  addAttributes() {
+    return {
+      src: { default: '', parseHTML: (el) => el.getAttribute('src') || '', renderHTML: (a) => ({ src: a.src }) },
+      alt: { default: '', parseHTML: (el) => el.getAttribute('alt') || '', renderHTML: (a) => ({ alt: a.alt }) },
+      title: { default: null, parseHTML: (el) => el.getAttribute('title'), renderHTML: (a) => (a.title ? { title: a.title } : {}) },
+      width: { default: null, parseHTML: (el) => Number.parseInt(el.getAttribute('width') || '', 10) || null, renderHTML: (a) => (a.width ? { width: String(a.width) } : {}) },
+      height: { default: null, parseHTML: (el) => Number.parseInt(el.getAttribute('height') || '', 10) || null, renderHTML: (a) => (a.height ? { height: String(a.height) } : {}) },
+      /** 'none' | 'left' | 'right' -- which side the text wraps to. */
+      float: {
+        default: 'none',
+        parseHTML: (el) => {
+          const value = el.getAttribute('data-float');
+          return value === 'left' || value === 'right' ? value : 'none';
+        },
+        renderHTML: (a) => (a.float && a.float !== 'none' ? { 'data-float': a.float } : {}),
+      },
+      /** 'none' | 'block' -- whether the image sits on the text baseline. */
+      display: {
+        default: 'block',
+        parseHTML: (el) => (el.getAttribute('data-display') === 'inline' ? 'inline' : 'block'),
+        renderHTML: (a) => (a.display === 'inline' ? { 'data-display': 'inline' } : {}),
+      },
+    };
+  },
+
+  parseHTML() {
+    return [{ tag: 'img[src]' }];
+  },
+
+  renderHTML({ HTMLAttributes }) {
+    return ['img', mergeAttributes(this.options.HTMLAttributes, HTMLAttributes)];
+  },
+});
+
 /** A single physical page. Always has at least one block. */
 export const Page = Node.create({
   name: 'page',
@@ -149,3 +255,92 @@ export function nextScaffoldId() {
   scaffoldCounter += 1;
   return `s${scaffoldCounter.toString(36)}`;
 }
+
+// ---------------------------------------------------------------------------
+// Commands
+// ---------------------------------------------------------------------------
+
+/**
+ * Block indentation, as a chainable command.
+ *
+ * Level-based rather than length-based so the same document indents the same way
+ * at any zoom and on any paper size, and so the stored HTML stays a small
+ * integer. Clamped rather than allowed to run away, because a stylesheet can only
+ * describe so many levels.
+ */
+export const Indent = Extension.create({
+  name: 'indentCommands',
+
+  addCommands() {
+    // TipTap calls a command as `command(...args)(props)`, so each entry has to
+    // be a function that *returns* the props function. Returning the props
+    // function directly looks equivalent and is not: TipTap calls it with no
+    // arguments, the destructuring gets `undefined`, and the throw happens deep
+    // inside a dispatch rather than failing cleanly.
+    //
+    // The current value comes from `editor.getAttributes`, not from
+    // `commands.getAttributes`: the first is an Editor method and the second is
+    // not a registered command, so the latter is `undefined`.
+    const step = (delta) => () => ({ editor, commands }) => {
+      const current = editor.getAttributes('paragraph').indent ?? 0;
+      return commands.updateAttributes('paragraph', { indent: clampIndent(current + delta) });
+    };
+    return {
+      increaseIndent: step(1),
+      decreaseIndent: step(-1),
+      setIndent:
+        (level) =>
+        ({ commands }) =>
+          commands.updateAttributes('paragraph', { indent: clampIndent(level) }),
+    };
+  },
+});
+
+/**
+ * Image insertion and geometry.
+ *
+ * `setImage` is a command rather than a direct `insertContent` so the panel and a
+ * paste handler can share it, and so the size attributes are always set the same
+ * way. A width and height are required: without them the block measures as empty
+ * until the file decodes, and the paginator places the page break wrongly.
+ */
+export const ImageCommands = Extension.create({
+  name: 'imageCommands',
+
+  addCommands() {
+    return {
+      setImage:
+        (options) =>
+        ({ commands }) => {
+          const { src, width, height, ...rest } = options || {};
+          if (!src) return false;
+          return commands.insertContent({
+            type: 'image',
+            attrs: { src, width: width || null, height: height || null, ...rest },
+          });
+        },
+      setImageSize:
+        (attributes) =>
+        ({ commands }) =>
+          commands.updateAttributes('image', attributes),
+      setImageFloat:
+        (value) =>
+        ({ commands }) =>
+          commands.updateAttributes('image', { float: value }),
+    };
+  },
+});
+
+/** A forced page break before this block. */
+export const PageBreak = Extension.create({
+  name: 'pageBreakCommand',
+
+  addCommands() {
+    return {
+      setPageBreakBefore:
+        (value = true) =>
+        ({ commands }) =>
+          commands.updateAttributes('paragraph', { breakBefore: Boolean(value) }),
+    };
+  },
+});

@@ -13,11 +13,22 @@
 
 import { Editor, mergeAttributes } from '@tiptap/core';
 import StarterKit from '@tiptap/starter-kit';
-import Paragraph from '@tiptap/extension-paragraph';
+import Placeholder from '@tiptap/extension-placeholder';
+import Link from '@tiptap/extension-link';
 import TextAlign from '@tiptap/extension-text-align';
 import Document from '@tiptap/extension-document';
-
-import { CharacterStyle, DIRECTION, Heading, Page, Scaffold } from './extensions.js';
+import {
+  CharacterStyle,
+  DIRECTION,
+  Heading,
+  Image,
+  ImageCommands,
+  Indent,
+  IndentableParagraph,
+  PageBreak,
+  Page,
+  Scaffold,
+} from './extensions.js';
 import { Paginator, VIRTUAL_CLASS, supportsContainment } from './paginator.js';
 import { stripPageWrappers } from './pagination.js';
 import { createRibbon } from './ribbon.js';
@@ -27,6 +38,8 @@ import { createAssistant } from './assistant.js';
 import { runScaffolds, collectScaffolds } from './scaffolds.js';
 import { createFind } from './findbar.js';
 import { findPlugin } from './find.js';
+import { createImagePanel } from './imagepanel.js';
+import { isSafeImageSource } from './images.js';
 import { createAutosave } from './autosave.js';
 import { createFileOperations } from './fileops.js';
 import { createSettings } from './settings.js';
@@ -151,13 +164,20 @@ async function boot() {
       // configured off below.
       Heading,
       // StarterKit v3 already bundles Underline and Heading.
-      StarterKit.configure({ document: false, heading: false, paragraph: false }),
+      StarterKit.configure({
+      document: false,
+      heading: false,
+      paragraph: false,
+      // StarterKit ships a link of its own; this one is configured differently,
+      // and registering both leaves two nodes with the same name.
+      link: false,
+    }),
     // Registered separately rather than through `StarterKit.configure`, which
     // silently keeps its own copy: the custom `renderHTML` below is then never
     // called and the attribute is simply absent. Disabling StarterKit's
     // paragraph and supplying this one is the pattern already used for `heading`
     // and `document` above.
-    Paragraph.extend({
+    IndentableParagraph.extend({
       // `dir="auto"` per block, for the same reason the headings have it: a
       // document may contain text in both directions, and only the block's own
       // content can say which way it runs.
@@ -169,7 +189,23 @@ async function boot() {
         ];
       },
     }),
-      TextAlign.configure({ types: ['heading', 'paragraph'] }),
+    Link.configure({
+      // Clicking a link in an editor should put the caret there, not follow it.
+      // The reader opens links from the exported document instead.
+      openOnClick: false,
+      autolink: true,
+      linkOnPaste: true,
+      HTMLAttributes: { rel: 'noopener noreferrer', class: 'doc-link' },
+    }),
+    Image,
+    // The commands the new toolbar buttons call. Without these registered the
+    // buttons exist and do nothing, and nothing complains: a missing command is
+    // `undefined` rather than an error until something calls it.
+    ImageCommands,
+    Indent,
+    PageBreak,
+    Placeholder.configure({ placeholder: 'Start writing…' }),
+    TextAlign.configure({ types: ['heading', 'paragraph'] }),
     ],
     content: EMPTY_DOCUMENT,
     editorProps: {
@@ -195,6 +231,11 @@ async function boot() {
       paginator?.schedule();
       scheduleStats();
       markDirtyNow();
+      // An attribute change -- an indent, an alignment, a wrap -- is a state
+      // change too, and it fires `onUpdate` rather than `onSelectionUpdate`, so
+      // syncing only on the latter would leave the toolbar showing the previous
+      // state until the user happened to move the caret.
+      ribbon.sync();
     },
     onSelectionUpdate: () => {
       ribbon.sync();
@@ -212,7 +253,16 @@ async function boot() {
     message: byId('status-bar-text'),
     meta: byId('status-meta'),
   });
-  const ribbon = createRibbon(editor);
+  // `imagePanel` and `paginator` are assigned below; the hooks are closures, so
+  // they read whatever is current when a click happens rather than at wiring
+  // time. A button cannot be pressed before boot finishes, so this is safe and
+  // it avoids threading a not-yet-built object through the ribbon.
+  let imagePanel = null;
+  const ribbon = createRibbon(editor, {
+    onFind: () => find && find.open(),
+    onImage: () => imagePanel && imagePanel.open(),
+    onStatus: (message) => flash(status, message, 2500),
+  });
   const outline = createOutline(editor);
 
   paginator = new Paginator({
@@ -249,6 +299,29 @@ async function boot() {
   );
 
   find = createFind(editor, { status });
+
+  imagePanel = createImagePanel({ editor, paginator, status });
+  for (const preset of document.querySelectorAll('#image-size-presets .image-preset')) {
+    preset.addEventListener('click', () => {
+      const fraction = Number.parseFloat(preset.dataset.fraction || '1');
+      if (Number.isFinite(fraction)) imagePanel.applyPreset(fraction);
+    });
+  }
+
+  // Pasting an image from the clipboard should insert it the same way choosing
+  // a file does, including measuring it first -- a pasted image with no
+  // dimensions is the same pagination hazard as a dropped one.
+  const pasteImages = (event) => {
+    const items = Array.from(event.clipboardData?.items || []);
+    const item = items.find((entry) => /^image\//i.test(entry.type || ''));
+    if (!item) return false;
+    const file = item.getAsFile();
+    if (!file) return false;
+    event.preventDefault();
+    imagePanel.insertFile(file);
+    return true;
+  };
+  editor.view.dom.addEventListener('paste', pasteImages);
 
   const contextMenu = createContextMenu(editor, {
     status,
@@ -312,8 +385,7 @@ async function boot() {
   const autosave = createAutosave({
     editor,
     api,
-    state,
-    status,
+    state,    status,
     onConflict: () => {
       // Watch again after the user resolves the conflict; until then, saving
       // would keep racing whatever is writing the file.
@@ -419,7 +491,7 @@ async function boot() {
   window.setTimeout(() => paginator.apply(), 400);
 
   // Exposed deliberately, for debugging from the webview console.
-  window.llex = { editor, paginator, api, menus, settings, files, assistant, contextMenu, find, autosave, state };
+  window.llex = { editor, paginator, api, menus, settings, files, assistant, contextMenu, find, imagePanel, autosave, state };
 }
 
 function start() {

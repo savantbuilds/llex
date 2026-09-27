@@ -27,7 +27,7 @@ from __future__ import annotations
 
 import contextlib
 import re
-from collections.abc import Iterator
+from collections.abc import Iterator, Mapping
 from dataclasses import dataclass, field
 from html.parser import HTMLParser
 from typing import Final
@@ -61,6 +61,7 @@ BLOCK_KINDS: Final = frozenset(
         "blockquote",
         "horizontalRule",
         "page",
+        "image",
     }
 )
 
@@ -171,10 +172,35 @@ class Block:
     level: int | None = None
     align: str | None = None
     language: str | None = None
+    #: Element attributes that are not block semantics -- an image's source, size
+    #: and wrapping. Kept as a mapping rather than a field per attribute so a new
+    #: kind does not mean a new dataclass field, and so nothing has to be renamed
+    #: if the editor's attribute set grows.
+    attrs: dict[str, str] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         if self.kind not in BLOCK_KINDS:
             raise ValueError(f"unknown block kind: {self.kind!r}")
+
+    def attr(self, name: str, default: str = "") -> str:
+        """One element attribute, or ``default`` when absent."""
+        return self.attrs.get(name, default)
+
+    def number(self, name: str) -> int | None:
+        """One element attribute read as an integer, or ``None``.
+
+        Returns ``None`` rather than zero for an absent or unparseable value,
+        because zero is a meaningful width for neither an image nor anything
+        else, and "not specified" is what a caller has to be able to tell apart.
+        """
+        raw = self.attrs.get(name)
+        if raw is None:
+            return None
+        try:
+            value = int(str(raw).strip())
+        except (TypeError, ValueError):
+            return None
+        return value if value > 0 else None
 
     @property
     def text(self) -> str:
@@ -334,6 +360,40 @@ def _style_from_tags(
     )
 
 
+#: Image source schemes the editor is allowed to render.
+#:
+#: A `.llex` file is data, and an ``<img src>`` is a URL the editor will load. A
+#: ``javascript:`` source would therefore be a script injection into the editor
+#: itself, so only real image data URIs and plain http(s) are kept. Anything else
+#: is dropped at parse time rather than carried into an export.
+_IMAGE_SCHEMES: Final = ("data:image/", "https://", "http://")
+
+#: Image attributes carried through, in the editor's own names.
+_IMAGE_ATTRS: Final = ("alt", "title", "width", "height", "data-float", "data-display")
+
+
+def _image_attrs(attrs: Mapping[str, str | None]) -> dict[str, str]:
+    """The image attributes worth keeping, with a validated source.
+
+    An unusable ``src`` yields an empty mapping and the block is dropped by the
+    caller, because an image with no source renders as a broken-image icon and
+    is worse than nothing in a document.
+    """
+    source = (attrs.get("src") or "").strip()
+    if not source.lower().startswith(_IMAGE_SCHEMES):
+        return {}
+    # A `data:` URI must actually be an image; `data:text/html` in an `img src`
+    # is inert but a `data:` URI of the wrong type is at best noise.
+    if source.lower().startswith("data:") and not source.lower().startswith("data:image/"):
+        return {}
+    kept = {"src": source}
+    for name in _IMAGE_ATTRS:
+        value = attrs.get(name)
+        if value:
+            kept[name] = value
+    return kept
+
+
 def _scaffold_from(attrs: dict[str, str | None] | None) -> ScaffoldRef | None:
     """Read a scaffold off an element's attributes, if it has one.
 
@@ -420,6 +480,12 @@ _TAG_SPECS: Final[dict[str, _TagSpec]] = {
     "section": _TagSpec("paragraph", holds_blocks=True, accepts_inline=False),
     "article": _TagSpec("paragraph", holds_blocks=True, accepts_inline=False),
     "main": _TagSpec("paragraph", holds_blocks=True, accepts_inline=False),
+    "figure": _TagSpec("paragraph", holds_blocks=True, accepts_inline=False),
+    # An image is a block of its own: it is what the editor's `Image` node
+    # produces, and treating it as inline would put it inside a paragraph, where
+    # the paginator measures it as part of that paragraph's line box rather than
+    # as a block whose height decides where the next page starts.
+    "img": _TagSpec("image", holds_blocks=False, accepts_inline=False),
 }
 
 
@@ -428,6 +494,7 @@ class _Frame:
 
     __slots__ = (
         "align",
+        "attrs",
         "children",
         "implicit",
         "is_page",
@@ -448,6 +515,8 @@ class _Frame:
         self.language: str | None = None
         self.runs: list[TextRun] = []
         self.children: list[_Frame] = []
+        #: Element attributes that are not block semantics; an image's, mostly.
+        self.attrs: dict[str, str] = {}
 
     @property
     def holds_blocks(self) -> bool:
@@ -497,6 +566,12 @@ class _Frame:
         kind = "page" if self.is_page else self.spec.kind
         if kind is None:  # pragma: no cover - defensive
             kind = "paragraph"
+        if kind == "image" and not self.attrs.get("src"):
+            # `_image_attrs` found no usable source. An image with no source
+            # renders as a broken-image icon, which in a paginated document is
+            # also a block the paginator will try to measure, so it is dropped
+            # rather than carried.
+            return None
         return Block(
             kind=kind,
             runs=tuple(self.runs),
@@ -504,6 +579,7 @@ class _Frame:
             level=self.spec.heading_level,
             align=self.align,
             language=self.language,
+            attrs=dict(self.attrs),
         )
 
 
@@ -585,8 +661,11 @@ class _DocumentBuilder(HTMLParser):
         if tag == "br":
             self._pending += "\n"
             return
-        if tag in _VOID_TAGS:
+        if tag in _VOID_TAGS and tag != "img":
             return
+        # `img` is void but is *content*: a block the paginator measures and the
+        # exporters have to emit, so it deliberately falls through to the block
+        # path below rather than being skipped along with `<meta>` and friends.
 
         spec = _TAG_SPECS.get(tag)
         if spec is None:
@@ -617,11 +696,13 @@ class _DocumentBuilder(HTMLParser):
         if tag == "pre" and attrs.get("class"):
             frame.language = attrs["class"]
         frame.is_page = tag == "div" and "page" in (attrs.get("class") or "").split()
+        if tag == "img":
+            frame.attrs = _image_attrs(attrs)
         self._imply_close(tag)
         self._block_parent().append(frame)
         self._stack.append(frame)
-        if tag == "hr":
-            # `<hr>` is a leaf that is never explicitly closed.
+        if tag in {"hr", "img"}:
+            # `hr` and `img` are leaves that are never explicitly closed.
             self._close_top()
 
     def handle_startendtag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
@@ -765,6 +846,12 @@ def _render_blocks(blocks: tuple[Block, ...], indent: str = "") -> list[str]:
 def _render_block(block: Block, indent: str = "") -> list[str]:
     if block.kind == "horizontalRule":
         return [f"{indent}---"]
+    if block.kind == "image":
+        # Plain text has no images, so the alt text is the only thing that can
+        # carry across. A reader that skips it is better than a broken-image
+        # marker in a paragraph of prose.
+        alt = block.attr("alt").strip()
+        return [f"{indent}[image: {alt}]"] if alt else []
     if block.kind in {"bulletList", "orderedList"}:
         lines: list[str] = []
         for index, item in enumerate(block.children, start=1):

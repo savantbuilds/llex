@@ -19,10 +19,18 @@ yourself.
 
 **A paginated editor that behaves like a word processor**
 
-- Hard 8.5 × 11 in pages with configurable margins, laid out in the browser and
-  re-flowed from measured layout.
+- Real paper sizes — A4, A3, A5, B5, Letter, Legal and Tabloid, in portrait or
+  landscape, defaulting to whatever the user's locale implies, with configurable
+  margins. Laid out in the browser and re-flowed from measured layout.
 - Ribbons, keyboard shortcuts, a live document outline built from real headings,
   a formatting mini-toolbar, and undo/redo across the whole stack.
+- Find and replace, with regular expressions, whole-word and case matching.
+- Images: drop or paste one, size it by width or preset, choose how the text
+  wraps around it, and set alt text. The size is recorded in the document, so
+  page breaks land correctly as soon as the image appears rather than after it
+  loads — the paginator measures rendered height, and a block whose height is
+  unknown until it decodes would put the break in the wrong place.
+- Right-to-left text, decided per block, with logical margins throughout.
 - Zoom, focus mode, dark/light theming, and a print stylesheet that emits the
   pages as paper.
 

@@ -552,6 +552,235 @@ kbd {
 }
 
 /* ==========================================================================
+   Images
+   ========================================================================== */
+
+/* `max-width: 100%` is a safety net, not the sizing mechanism: the node carries
+   explicit width and height so the space is reserved on the first paint. An
+   image sized only by CSS measures as zero-height until it decodes, and the
+   paginator would put the page break in the wrong place. */
+.tiptap img {
+  display: block;
+  max-width: 100%;
+  height: auto;
+  border-radius: 2px;
+}
+
+.tiptap img.ProseMirror-selectednode {
+  outline: 2px solid var(--accent-bright);
+  outline-offset: 2px;
+}
+
+/* Wrapped images: the text flows down the opposite side, which is the whole
+   point of the mode. `shape-outside` is irrelevant for a rectangular bitmap but
+   costs nothing and is what a future SVG figure would need. */
+.tiptap img[data-float="left"] {
+  float: inline-start;
+  margin-inline-end: 10px;
+  margin-block-end: 6px;
+}
+
+.tiptap img[data-float="right"] {
+  float: inline-end;
+  margin-inline-start: 10px;
+  margin-block-end: 6px;
+}
+
+/* "With text" sits on the baseline, the way an inline picture does, so it needs
+   the descender space a block image does not. */
+.tiptap img[data-display="inline"] {
+  display: inline;
+  vertical-align: baseline;
+  margin-inline-end: 4px;
+}
+
+/* A floated image must be cleared by whatever follows it, or the text beside it
+   keeps running down the page. */
+.tiptap p,
+.tiptap h1,
+.tiptap h2,
+.tiptap h3,
+.tiptap h4,
+.tiptap h5,
+.tiptap h6,
+.tiptap ul,
+.tiptap ol,
+.tiptap blockquote {
+  clear: both;
+}
+
+.tiptap img[data-float="none"] {
+  clear: both;
+}
+
+/* Block indent, from the paragraph's `data-indent`. Levels rather than lengths,
+   so the same document indents identically at any zoom and on any paper. */
+.tiptap [data-indent="1"] { margin-inline-start: 0.5in; }
+.tiptap [data-indent="2"] { margin-inline-start: 1in; }
+.tiptap [data-indent="3"] { margin-inline-start: 1.5in; }
+.tiptap [data-indent="4"] { margin-inline-start: 2in; }
+.tiptap [data-indent="5"] { margin-inline-start: 2.5in; }
+.tiptap [data-indent="6"] { margin-inline-start: 3in; }
+.tiptap [data-indent="7"] { margin-inline-start: 3.5in; }
+.tiptap [data-indent="8"] { margin-inline-start: 4in; }
+
+/* A forced break before this block. The paginator moves whole blocks between
+   page nodes, so this is honoured in CSS as well: `break-before` is what a
+   print engine and a reading system both understand. */
+.tiptap [data-page-break-before="true"] {
+  break-before: page;
+  page-break-before: always;
+}
+
+.tiptap a.doc-link {
+  color: var(--accent-bright);
+  text-decoration: underline;
+}
+
+/* The link address row, revealed by the link button rather than opening a
+   dialog: a dialog for one field is three interactions where one will do. */
+.link-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 6px;
+  border: 1px solid #555;
+  border-radius: 4px;
+  background: #1e1e1e;
+}
+
+.link-row[hidden] {
+  display: none;
+}
+
+.link-row input[type="text"] {
+  flex: 1;
+  min-width: 0;
+  padding: 4px 6px;
+  border: 1px solid #555;
+  border-radius: 3px;
+  background: #111;
+  color: #fff;
+}
+
+.link-row input[type="text"]:focus-visible {
+  border-color: var(--accent-bright);
+  outline: none;
+}
+
+/* ==========================================================================
+   Image panel
+   ========================================================================== */
+
+.image-panel {
+  position: fixed;
+  inset-block-start: 96px;
+  inset-inline-end: 16px;
+  z-index: 60;
+  width: min(320px, calc(100vw - 32px));
+  padding: 12px;
+  border: 1px solid #4a4a4a;
+  border-radius: 6px;
+  background: var(--chrome-bg);
+  color: var(--chrome-fg);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5);
+}
+
+.image-panel[hidden] {
+  display: none;
+}
+
+.image-panel-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-block-end: 8px;
+}
+
+.image-panel h2 {
+  margin: 0;
+  font-size: 14px;
+}
+
+.image-drop {
+  padding: 14px 10px;
+  border: 1px dashed #555;
+  border-radius: 5px;
+  text-align: center;
+}
+
+.image-drop[data-over="true"] {
+  border-color: var(--accent-bright);
+  background: rgba(14, 99, 156, 0.2);
+}
+
+.image-drop p {
+  margin: 0 0 4px;
+}
+
+.image-drop strong {
+  color: var(--accent-bright);
+  cursor: pointer;
+  text-decoration: underline;
+}
+
+/* The drop zone's own label is the click target, so the hidden file input is
+   driven from here rather than from the button. */
+.image-drop input[type="file"] {
+  display: block;
+  margin: 0 auto 8px;
+  max-width: 100%;
+  font-size: 11px;
+  color: var(--chrome-muted);
+}
+
+.image-row {
+  display: grid;
+  grid-template-columns: 88px 1fr;
+  gap: 8px;
+  align-items: center;
+  margin-block-start: 8px;
+}
+
+.image-label,
+.image-row label {
+  font-size: 12px;
+  color: var(--chrome-muted);
+}
+
+.image-row input[type="number"],
+.image-row input[type="text"] {
+  width: 100%;
+  padding: 4px 6px;
+  border: 1px solid #555;
+  border-radius: 4px;
+  background: #1e1e1e;
+  color: #fff;
+}
+
+.image-row input:disabled,
+.image-row select:disabled {
+  opacity: 0.5;
+}
+
+.image-presets {
+  display: flex;
+  gap: 4px;
+}
+
+.image-preset {
+  flex: 1;
+  padding: 3px 0;
+  font-size: 11px;
+}
+
+.image-hint {
+  margin: 8px 0 0;
+  font-size: 11px;
+  color: var(--chrome-muted);
+}
+
+/* ==========================================================================
    Context menu
    ========================================================================== */
 
