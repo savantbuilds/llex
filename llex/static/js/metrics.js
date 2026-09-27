@@ -54,11 +54,14 @@ export function formatNumber(value) {
  * @param {number} characters
  * @param {number} pages
  * @param {number} [selected]
+ * @param {number} [page] 1-based index of the page the cursor is on.
  * @returns {string}
  */
-export function formatStats(words, characters, pages, selected = 0) {
+export function formatStats(words, characters, pages, selected = 0, page = 0) {
   const base =
     `${formatNumber(words)} words | ${formatNumber(characters)} characters` +
     ` | ${formatNumber(pages)} pages`;
-  return selected > 0 ? `${base} | ${formatNumber(selected)} selected` : base;
+  const where = page > 0 ? ` | page ${formatNumber(page)} of ${formatNumber(pages)}` : '';
+  const selection = selected > 0 ? ` | ${formatNumber(selected)} selected` : '';
+  return `${base}${where}${selection}`;
 }

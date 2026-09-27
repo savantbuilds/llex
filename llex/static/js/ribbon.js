@@ -8,6 +8,10 @@
 
 const FONT_SIZES = [8, 10, 11, 12, 14, 18, 24, 36];
 
+/** Shown when the selection carries no explicit character formatting. */
+const FONT_FAMILY_DEFAULT = 'Calibri';
+const FONT_SIZE_DEFAULT = '11pt';
+
 /**
  * Move a font size to the next or previous step on the scale.
  *
@@ -88,23 +92,32 @@ export function createRibbon(editor) {
     });
   }
 
-  // Font family and size are not marks in this schema; they are applied to the
-  // current block as a style, which is what a word processor's font box does
-  // when nothing is selected.
+  // Font family and size are character properties, so they go on the selection
+  // as a mark. Rewriting the paragraph node instead -- which is what this did
+  // first -- reformatted text the user had not selected, which is not what a
+  // word processor's font box does.
   const fontFamily = document.getElementById('font-family');
   const fontSize = document.getElementById('font-size');
 
-  if (fontFamily) {
-    fontFamily.addEventListener('change', (event) => {
-      editor.chain().focus().setNode('paragraph', { fontFamily: event.target.value }).run();
-    });
-  }
-  if (fontSize) {
-    fontSize.addEventListener('change', (event) => {
-      editor.chain().focus().setNode('paragraph', { fontSize: event.target.value }).run();
-    });
-  }
+  const applyFontFamily = (value) => {
+    const chain = editor.chain().focus();
+    if (value) chain.setMark('textStyle', { fontFamily: value });
+    else chain.unsetMark('textStyle', { fontFamily: null });
+    chain.run();
+  };
 
+  const applyFontSize = (value) => {
+    const chain = editor.chain().focus();
+    if (value) chain.setMark('textStyle', { fontSize: value });
+    else chain.unsetMark('textStyle', { fontSize: null });
+    chain.run();
+  };
+
+  if (fontFamily) fontFamily.addEventListener('change', (event) => applyFontFamily(event.target.value));
+  if (fontSize) fontSize.addEventListener('change', (event) => applyFontSize(event.target.value));
+
+  // A toolbar can change the document without a selection changing, e.g. via a
+  // menu command, so the ribbon also refreshes on every update.
   const markActive = (button, active) => {
     if (!button) return;
     button.classList.toggle('active', active);
@@ -133,10 +146,16 @@ export function createRibbon(editor) {
 
     if (styleDropdown) styleDropdown.value = styleForHeading(editor);
 
-    const block = editor.getAttributes('paragraph');
-    if (fontFamily && block.fontFamily) fontFamily.value = block.fontFamily;
-    if (fontSize && block.fontSize) fontSize.value = block.fontSize;
+    // Show the mark's value when the selection has one, falling back to the
+    // document default rather than blanking the control.
+    const character = editor.getAttributes('textStyle');
+    if (fontFamily) {
+      fontFamily.value = character.fontFamily || FONT_FAMILY_DEFAULT;
+    }
+    if (fontSize) {
+      fontSize.value = character.fontSize || FONT_SIZE_DEFAULT;
+    }
   }
 
-  return { sync, stepFontSize };
+  return { sync, stepFontSize, applyFontFamily, applyFontSize };
 }

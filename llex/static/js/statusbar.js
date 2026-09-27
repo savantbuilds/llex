@@ -21,11 +21,21 @@ export function createStatusBar(options) {
   const message = options.message || document.getElementById('status-bar-text');
   let lastMeta = '';
 
-  /** Re-derive the statistics block from current editor state. */
-  function renderMeta() {
+  /**
+   * Re-derive the statistics block from current editor state.
+   *
+   * @param {number} [page] 1-based page the cursor is on, when known.
+   */
+  function renderMeta(page = 0) {
     if (!meta) return;
     const { from, to } = editor.state.selection;
-    const text = formatStats(state.words, state.characters, state.pages, from === to ? 0 : to - from);
+    const text = formatStats(
+      state.words,
+      state.characters,
+      state.pages,
+      from === to ? 0 : to - from,
+      page,
+    );
     if (text !== lastMeta) {
       meta.textContent = text;
       lastMeta = text;

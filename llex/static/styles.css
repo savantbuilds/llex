@@ -607,15 +607,29 @@ body.focus-mode #sidebar {
   box-shadow: var(--page-shadow), 0 0 0 2px var(--warning);
 }
 
-/* Page numbers, added by CSS so they never enter the document. */
+/* Page numbers, drawn with a CSS counter.
+   This was first done in JavaScript by stamping `data-page-number` onto each
+   page. ProseMirror reconciles node DOM against the node spec and removes
+   attributes the spec does not declare, so the stamp was silently stripped on
+   the next transaction and the number disappeared. A CSS counter cannot desync
+   from the page list, costs nothing, and keeps numbering out of the document. */
+.tiptap {
+  counter-reset: llex-page;
+}
+
+.tiptap > .page {
+  counter-increment: llex-page;
+}
+
 .tiptap > .page::after {
-  content: attr(data-page-number);
+  content: counter(llex-page);
   position: absolute;
   inset-block-end: calc(var(--margin-bottom) / 3);
   inset-inline: 0;
   color: #999;
   font-size: 9pt;
   text-align: center;
+  pointer-events: none;
 }
 
 .tiptap > .page[data-overfull="true"]::after {

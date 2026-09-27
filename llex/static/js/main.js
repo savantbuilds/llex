@@ -16,7 +16,7 @@ import StarterKit from '@tiptap/starter-kit';
 import TextAlign from '@tiptap/extension-text-align';
 import Document from '@tiptap/extension-document';
 
-import { PagedDocument, Page, Scaffold } from './extensions.js';
+import { CharacterStyle, Heading, Page, Scaffold } from './extensions.js';
 import { Paginator } from './paginator.js';
 import { stripPageWrappers } from './pagination.js';
 import { createRibbon } from './ribbon.js';
@@ -95,12 +95,42 @@ async function boot() {
   /** @type {Paginator|undefined} */
   let paginator;
 
+  /**
+   * The 1-based page the cursor is on, or 0 when it cannot be determined.
+   *
+   * Derived from the DOM rather than from the document, because only the
+   * rendered layout knows which page a position ended up on.
+   *
+   * @returns {number}
+   */
+  function currentPage() {
+    if (!paginator) return 0;
+    const { node, offset } = editor.state.selection.$head;
+    if (!node.isInline) {
+      // A block position: the page is whichever one contains it.
+      const dom = editor.view.domAtPos(editor.state.selection.from);
+      let element = dom.node;
+      while (element && !(element.classList && element.classList.contains('page'))) {
+        element = element.parentElement;
+      }
+      if (!element) return 0;
+      return Array.prototype.indexOf.call(paginator.container.children, element) + 1;
+    }
+    const dom = editor.view.domAtPos(editor.state.selection.from - offset);
+    let element = dom.node;
+    while (element && !(element.classList && element.classList.contains('page'))) {
+      element = element.parentElement;
+    }
+    if (!element) return 0;
+    return Array.prototype.indexOf.call(paginator.container.children, element) + 1;
+  }
+
   const scheduleStats = debounce(() => {
     const text = editor.getText();
     state.words = countWords(text);
     state.characters = countCharacters(text);
     state.pages = editor.view.dom.querySelectorAll('.page').length || 1;
-    statusBar.renderMeta();
+    statusBar.renderMeta(currentPage());
   }, STATS_DEBOUNCE_MS);
 
   let markDirtyNow = () => {};
@@ -108,12 +138,16 @@ async function boot() {
   const editor = new Editor({
     element: surface,
     extensions: [
-      PagedDocument(Document),
+      // The page wrapper replaces the stock document node.
+      Document.extend({ content: 'page+' }),
       Page,
       Scaffold,
-      // StarterKit v3 already bundles Underline, so registering it again would
-      // install a duplicate extension under the same name.
-      StarterKit.configure({ document: false }),
+      CharacterStyle,
+      // Our own heading, so `keepWithNext` can be carried; StarterKit's is
+      // configured off below.
+      Heading,
+      // StarterKit v3 already bundles Underline and Heading.
+      StarterKit.configure({ document: false, heading: false }),
       TextAlign.configure({ types: ['heading', 'paragraph'] }),
     ],
     content: EMPTY_DOCUMENT,
@@ -141,7 +175,10 @@ async function boot() {
       scheduleStats();
       markDirtyNow();
     },
-    onSelectionUpdate: () => ribbon.sync(),
+    onSelectionUpdate: () => {
+      ribbon.sync();
+      statusBar.renderMeta(currentPage());
+    },
   });
 
   // -- Components --------------------------------------------------------- //
@@ -242,7 +279,7 @@ async function boot() {
         return;
       }
       executeButton.disabled = true;
-      executeButton.textContent = 'RunningÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¦';
+      executeButton.textContent = 'RunningÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¦';
       try {
         const { total, applied, failures } = await runScaffolds(editor, {
           run: (scaffolds) => api.runScaffolds(scaffolds),

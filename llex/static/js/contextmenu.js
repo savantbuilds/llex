@@ -12,6 +12,12 @@ import { flash } from './dom.js';
 
 const MENU_MARGIN = 8;
 
+/** Fallback shown when the selection carries no explicit font size. */
+const FONT_SIZE_DEFAULT = '11pt';
+
+/** The highlight colour applied by the mini-toolbar. */
+const HIGHLIGHT_COLOUR = '#fff176';
+
 /**
  * Keep a menu inside the viewport.
  * @param {HTMLElement} menu
@@ -56,7 +62,7 @@ export function createContextMenu(editor, options = {}) {
     underline: () => editor.chain().focus().toggleUnderline().run(),
     'bullet-list': () => editor.chain().focus().toggleBulletList().run(),
     'ordered-list': () => editor.chain().focus().toggleOrderedList().run(),
-    'clear-format': () => editor.chain().focus().unsetAllMarks().clearNodes().run(),
+    'clear-format': () => clearCharacterFormatting(),
     'increase-font': () => changeFontSize(1),
     'decrease-font': () => changeFontSize(-1),
     highlight: () => toggleHighlight(),
@@ -66,13 +72,10 @@ export function createContextMenu(editor, options = {}) {
   };
 
   function changeFontSize(direction) {
-    const current = editor.getAttributes('paragraph').fontSize || '12pt';
-    const points = Number.parseFloat(current) || 12;
-    editor
-      .chain()
-      .focus()
-      .setNode('paragraph', { fontSize: `${stepFontSize(points, direction)}pt` })
-      .run();
+    const current = editor.getAttributes('textStyle').fontSize || FONT_SIZE_DEFAULT;
+    const points = Number.parseFloat(current) || 11;
+    const next = `${stepFontSize(points, direction)}pt`;
+    editor.chain().focus().setMark('textStyle', { fontSize: next }).run();
   }
 
   function toggleHighlight() {
@@ -80,7 +83,7 @@ export function createContextMenu(editor, options = {}) {
     editor
       .chain()
       .focus()
-      .setMark('textStyle', { backgroundColor: current ? null : '#fff176' })
+      .setMark('textStyle', { backgroundColor: current ? null : HIGHLIGHT_COLOUR })
       .run();
   }
 
@@ -94,6 +97,15 @@ export function createContextMenu(editor, options = {}) {
       editor.chain().focus().setMark('textStyle', { color: picker.value }).run();
     });
     picker.click();
+  }
+
+  function clearCharacterFormatting() {
+    editor
+      .chain()
+      .focus()
+      .unsetMark('textStyle')
+      .unsetAllMarks()
+      .run();
   }
 
   function cycleHeading() {
@@ -150,9 +162,9 @@ export function createContextMenu(editor, options = {}) {
     const select = event.target;
     if (!(select instanceof HTMLSelectElement)) return;
     if (select.dataset.action === 'font-family') {
-      editor.chain().focus().setNode('paragraph', { fontFamily: select.value }).run();
+      editor.chain().focus().setMark('textStyle', { fontFamily: select.value }).run();
     } else if (select.dataset.action === 'font-size') {
-      editor.chain().focus().setNode('paragraph', { fontSize: select.value }).run();
+      editor.chain().focus().setMark('textStyle', { fontSize: select.value }).run();
     }
   });
 

@@ -7,6 +7,7 @@
  */
 
 import { Node, Mark, mergeAttributes } from '@tiptap/core';
+import { TextStyleKit } from '@tiptap/extension-text-style';
 
 /**
  * An inline prompt attached to a highlighted span.
@@ -45,6 +46,62 @@ export const Scaffold = Mark.create({
   },
 });
 
+/**
+ * Character formatting, as a mark on the selection rather than a property of
+ * the block.
+ *
+ * Word and LibreOffice both distinguish block properties (alignment, indents)
+ * from character properties (font, size, colour). `TextStyleKit` provides the
+ * single `textStyle` mark carrying fontFamily, fontSize, color, backgroundColor
+ * and lineHeight.
+ *
+ * Registering this matters more than it looks: without it, `setMark('textStyle',
+ * ...)` reaches for a mark that does not exist in the schema and throws, and
+ * applying a font has to be faked by rewriting the enclosing paragraph, which
+ * reformats text the user did not select.
+ */
+export const CharacterStyle = TextStyleKit;
+
+/** Heading levels 1-6. */
+export const Heading = Node.create({
+  name: 'heading',
+  group: 'block',
+  content: 'inline*',
+  defining: true,
+  addOptions() {
+    return { levels: [1, 2, 3, 4, 5, 6] };
+  },
+  addAttributes() {
+    return {
+      level: {
+        default: 1,
+        parseHTML: (element) => Number(element.tagName.slice(1)) || 1,
+        renderHTML: (attributes) => ({ level: attributes.level }),
+      },
+      // Typographic constraint: a heading must not be the last thing on a page.
+      // The paginator reads this to keep a heading with the text it introduces.
+      // Only an explicit opt-out is serialised, so the common case adds no
+      // attribute noise to the document.
+      keepWithNext: {
+        default: true,
+        parseHTML: (element) => element.getAttribute('data-keep-with-next') !== 'false',
+        renderHTML: (attributes) =>
+          attributes.keepWithNext ? {} : { 'data-keep-with-next': 'false' },
+      },
+    };
+  },
+  parseHTML() {
+    return this.options.levels.map((level) => ({ tag: `h${level}`, priority: 51 - level }));
+  },
+  renderHTML({ node, HTMLAttributes }) {
+    const level = Math.min(Math.max(node.attrs.level || 1, 1), 6);
+    // `level` is carried by the tag name; emitting it as an attribute as well
+    // would put `level="1"` in the HTML for no reader to use.
+    const { level: _level, ...rest } = HTMLAttributes;
+    return [`h${level}`, mergeAttributes(this.options.HTMLAttributes, rest), 0];
+  },
+});
+
 /** A single physical page. Always has at least one block. */
 export const Page = Node.create({
   name: 'page',
@@ -60,12 +117,6 @@ export const Page = Node.create({
     return ['div', mergeAttributes(HTMLAttributes, { class: 'page' }), 0];
   },
 });
-
-/** The document root: an unbroken sequence of pages. */
-export const PagedDocument = (Document) =>
-  Document.extend({
-    content: 'page+',
-  });
 
 /**
  * Allocate an id for a new scaffold.

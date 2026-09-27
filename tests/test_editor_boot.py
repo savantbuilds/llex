@@ -123,6 +123,11 @@ window.AbortController = AbortController;
     metaText: text('status-meta'),
     zoomLabel: text('zoom-level'),
     exportItems: window.document.querySelectorAll('#export-menu .dropdown-item').length,
+    paginatorInfo: window.llex && window.llex.paginator ? { containerClass: window.llex.paginator.container ? window.llex.paginator.container.className : null, childCount: window.llex.paginator.container ? window.llex.paginator.container.children.length : -1, hasNumberPages: typeof window.llex.paginator.numberPages } : null,
+    pageNumbers: Array.from(window.document.querySelectorAll('#editor .page')).map(
+      (page) => page.getAttribute('data-page-number') || ''
+    ),
+    rootFontSize: window.document.documentElement.style.fontSize || '',
     footerChildren: (window.document.getElementById('status-bar') || {}).children
       ? window.document.getElementById('status-bar').children.length
       : 0,
@@ -248,6 +253,49 @@ class TestEditorBoots:
 
     def test_the_scaffold_mark_is_registered(self, boot_result: dict[str, object]) -> None:
         assert "scaffold" in list(boot_result.get("markNodes") or [])
+
+    def test_the_character_style_mark_is_registered(self, boot_result: dict[str, object]) -> None:
+        """Regression: `textStyle` was used but never registered.
+
+        StarterKit v3 does not bundle `@tiptap/extension-text-style`, so
+        `schema.marks.textStyle` was `undefined` and clicking Highlight or Text
+        colour threw a TypeError. Asserting the *presence* of a handler was not
+        enough; what matters is that the mark the handler reaches for exists.
+        """
+        assert "textStyle" in list(boot_result.get("markNodes") or [])
+
+    def test_heading_is_registered(self, boot_result: dict[str, object]) -> None:
+        assert "heading" in list(boot_result.get("schemaNodes") or [])
+
+    def test_page_numbers_come_from_a_css_counter(self) -> None:
+        """Page numbering must not be stamped onto the page nodes.
+
+        It was, and ProseMirror removed the attribute on the next transaction
+        because it is not in the node spec, so the numbers silently vanished.
+        A CSS counter cannot desync and cannot be stripped.
+        """
+        css = (Path(__file__).resolve().parent.parent / "llex" / "static" / "styles.css").read_text(
+            encoding="utf-8"
+        )
+        assert "counter-reset: llex-page" in css
+        assert "counter-increment: llex-page" in css
+        assert "content: counter(llex-page)" in css
+        assert "attr(data-page-number)" not in css, (
+            "page numbering must not depend on a DOM attribute"
+        )
+
+    def test_the_script_does_not_stamp_page_numbers(self) -> None:
+        script_dir = Path(__file__).resolve().parent.parent / "llex" / "static" / "js"
+        source = "\n".join(path.read_text(encoding="utf-8") for path in script_dir.glob("*.js"))
+        assert "data-page-number" not in source
+        assert "pageNumber" not in source
+
+    def test_the_root_font_size_is_not_scaled(self, boot_result: dict[str, object]) -> None:
+        """Regression: zoom scaled the root font size *and* the viewport.
+
+        The chrome is sized in `rem`, so it was being scaled twice.
+        """
+        assert boot_result.get("rootFontSize") == ""
 
     def test_application_state_exists(self, boot_result: dict[str, object]) -> None:
         keys = list(boot_result.get("stateKeys") or [])

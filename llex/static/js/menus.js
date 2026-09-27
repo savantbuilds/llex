@@ -19,13 +19,19 @@ export function createMenus(options) {
 
   let zoom = 100;
 
+  /**
+   * Zoom by scaling the editor viewport, and nothing else.
+   *
+   * The page boxes are measured in CSS pixels, so the scale has to apply to the
+   * whole document viewport -- hence a transform. The root font size is
+   * deliberately left alone: it is sized in `rem` throughout the chrome, so
+   * changing it as well would scale the toolbar and panels a second time.
+   */
   function applyZoom(percent) {
     zoom = Math.min(Math.max(percent, 25), 400);
     if (editorRoot) {
-      // Zoom the page geometry, not just the text, so pagination stays honest.
       editorRoot.style.setProperty('--zoom', String(zoom / 100));
     }
-    document.documentElement.style.fontSize = `${16 * (zoom / 100)}px`;
     const label = byId('zoom-level');
     if (label) label.textContent = `${zoom}%`;
     if (actions.onZoom) actions.onZoom(zoom);

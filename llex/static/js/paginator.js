@@ -109,6 +109,14 @@ export class Paginator {
       this.running = false;
     }
 
+    if (moved >= MAX_PASSES) {
+      // Refusing to spin silently would leave the document mis-paginated with
+      // no indication of why, which is the worst of the available outcomes.
+      console.warn(
+        `llex: pagination gave up after ${MAX_PASSES} passes; the layout may be wrong`,
+      );
+    }
+
     if (moved > 0) this.onChange();
     return { passes, moved, settled };
   }
