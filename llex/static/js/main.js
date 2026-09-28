@@ -387,6 +387,12 @@ async function boot() {
   });
 
   // -- Autosave and conflict detection ------------------------------------- //
+  //
+  // A conflict is a question, not a notification. Which version of the file wins
+  // is the user's decision, so the dialog has two real answers and dismissing it
+  // is not one of them: closing it without answering leaves the document alone
+  // and autosave stopped, rather than letting a later save quietly overwrite the
+  // other window's work.
 
   // Let the browser skip rendering pages that are nowhere near the viewport.
   // Opt-in on capability, so a browser without `content-visibility` simply lays
@@ -396,17 +402,80 @@ async function boot() {
     byId('main-content').classList.add(VIRTUAL_CLASS);
   }
 
+  const conflictModal = byId('conflict-modal');
+  const conflictDetail = byId('conflict-detail');
+  const conflictKeep = byId('btn-conflict-keep');
+  const conflictDisk = byId('btn-conflict-disk');
+
+  /**
+   * Show the conflict question.
+   *
+   * Declared before the autosave that calls it, and not inline as its
+   * `onConflict`, so the wiring below reads in order: dialog, then controller,
+   * then handlers.
+   *
+   * @param {object} conflict The API report.
+   */
+  function askConflict(conflict) {
+    if (conflictDetail) {
+      conflictDetail.textContent = conflict && conflict.detail
+        ? conflict.detail
+        : 'This file was changed by something else.';
+    }
+    if (conflictModal) conflictModal.hidden = false;
+    (conflictDisk || conflictKeep || conflictModal)?.focus();
+  }
+
+  /**
+   * Apply an answer to a reported conflict.
+   *
+   * A `null` response means the action failed and left the document alone, so
+   * the document is still in conflict and autosave is still stopped: the dialog
+   * stays up and the user can try again, which is the only honest outcome when
+   * the request did not work.
+   *
+   * @param {() => Promise<object|null>} action
+   * @param {string} message
+   */
+  async function settleConflict(action, message) {
+    if (conflictKeep) conflictKeep.disabled = true;
+    if (conflictDisk) conflictDisk.disabled = true;
+    try {
+      const response = await action();
+      if (response === null) throw new Error('the request did not complete');
+      if (conflictModal) conflictModal.hidden = true;
+      flash(status, message);
+    } catch (error) {
+      const detail = error && error.message ? error.message : String(error);
+      flash(status, `Could not resolve the conflict: ${detail}`, 8000);
+    } finally {
+      if (conflictKeep) conflictKeep.disabled = false;
+      if (conflictDisk) conflictDisk.disabled = false;
+    }
+  }
+
   const autosave = createAutosave({
     editor,
     api,
-    state,    status,
-    onConflict: () => {
-      // Watch again after the user resolves the conflict; until then, saving
-      // would keep racing whatever is writing the file.
-      window.setTimeout(() => autosave.start(), 1000);
-    },
+    state,
+    status,
+    onConflict: askConflict,
   });
   autosave.start();
+
+  // Attached once, after `autosave` exists, and not per report: a second conflict
+  // on the same document reuses the same dialog, and a handler added each time
+  // would mean every past conflict firing a second write.
+  if (conflictKeep) {
+    conflictKeep.addEventListener('click', () => {
+      settleConflict(() => autosave.keepMine(), 'Kept this window’s version.');
+    });
+  }
+  if (conflictDisk) {
+    conflictDisk.addEventListener('click', () => {
+      settleConflict(() => autosave.acceptDiskVersion(), 'Loaded the file from disk.');
+    });
+  }
 
   // -- Scaffolds ---------------------------------------------------------- //
 

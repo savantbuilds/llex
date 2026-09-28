@@ -439,6 +439,106 @@ window.AbortController = AbortController;
     });
   })();
 
+  // Concurrent-open conflict, through the real dialog.
+  //
+  // The bug this guards: a conflict used to flash a message and then restart
+  // autosave a second later, so the "detection" was a one-second warning before
+  // the last writer won anyway. `acceptDiskVersion` existed, was correct, and was
+  // called from nowhere.
+  function conflictSelection() {
+    var autosave = window.llex.autosave;
+    var doc = dom.window.document;
+    var ed = window.llex.editor;
+    var out = {};
+    var modal = doc.getElementById('conflict-modal');
+    var detail = doc.getElementById('conflict-detail');
+    var keepButton = doc.getElementById('btn-conflict-keep');
+    var diskButton = doc.getElementById('btn-conflict-disk');
+
+    out.hasDialog = Boolean(modal && keepButton && diskButton);
+    out.startsHidden = Boolean(modal && modal.hidden);
+    if (!out.hasDialog) return Promise.resolve(out);
+
+    // Let the dialog's own async handler run before anything is asserted.
+    var settle = function () {
+      return new Promise(function (resolve) { setTimeout(resolve, 60); });
+    };
+
+    var writes = [];
+    var originalApi = autosave.api;
+    var report = { status: 'conflict', detail: 'doc.llex was changed by another window.' };
+    autosave.api = {
+      autosave: function (html, title) {
+        writes.push({ html: html, title: title });
+        return Promise.resolve({ status: 'saved', document: { file_name: 'doc.llex' } });
+      },
+      conflict: function () { return Promise.resolve(report); },
+      acceptDisk: function () {
+        return Promise.resolve({
+          status: 'reloaded',
+          html: '<div class="page"><p>the version from disk</p></div>',
+          document: { file_name: 'doc.llex', title: 'From disk' },
+        });
+      },
+    };
+
+    window.llex.state.dirty = true;
+    window.llex.state.fileName = 'doc.llex';
+
+    return autosave.checkConflict()
+      .then(function (result) {
+        out.reported = Boolean(result && result.status === 'conflict');
+        out.shown = modal.hidden === false;
+        out.detailShown = Boolean(detail && detail.textContent.indexOf('another window') !== -1);
+        // The important one: autosave must stay stopped, or it races whatever is
+        // writing the file while the user is deciding.
+        out.timersStopped = autosave.timer === null && autosave.watchTimer === null;
+
+        keepButton.click();
+        return settle();
+      })
+      .then(function () {
+        out.keepWrote = writes.length === 1;
+        out.keepClosed = modal.hidden === true;
+        out.timersResumed = autosave.timer !== null;
+
+        autosave.stop();
+        // Re-assert: `checkConflict` returns early without a file name, and the
+        // save above is entitled to leave the shared state however it likes.
+        window.llex.state.fileName = 'doc.llex';
+        report = { status: 'conflict', detail: 'doc.llex was changed again.' };
+        return autosave.checkConflict();
+      })
+      .then(function (second) {
+        out.secondReported = Boolean(second && second.status === 'conflict');
+        out.modalShownForSecond = modal.hidden === false;
+        out.detailNow = detail ? detail.textContent : null;
+      })
+      .then(function () {
+        diskButton.click();
+        return settle();
+      })
+      .then(function () {
+        // Read the document rather than the rendered text: the paginator owns the
+        // rendered pages, and the reload lands in the document underneath it.
+        var after = ed.state.doc.textBetween(0, ed.state.doc.content.size, '\n');
+        out.diskLoaded = after.indexOf('the version from disk') !== -1;
+        out.afterText = after.slice(0, 120);
+        // Read the document rather than the rendered text: the paginator owns the
+        // rendered pages, and the reload lands in the document underneath it.
+        var after = ed.state.doc.textBetween(0, ed.state.doc.content.size, '\n');
+        out.diskLoaded = after.indexOf('the version from disk') !== -1;
+        out.afterText = after.slice(0, 120);
+        out.diskClearedDirty = window.llex.state.dirty === false;
+        out.diskWroteNothing = writes.length === 1;
+      })
+      .then(function () {
+        autosave.api = originalApi;
+        autosave.stop();
+        return out;
+      });
+  }
+
   // Rewrite Selection. The button is named for what it does, so this checks that
   // it does -- and that it replaces the range the user *selected*, rather than
   // wherever the caret happened to be when a slow model finally answered.
@@ -551,26 +651,32 @@ window.AbortController = AbortController;
   // process alive, so the run would time out with nothing to explain it. Give up
   // loudly instead, and stop the timers either way.
   var finished = false;
-  var report = function (errors) {
+  var writeResult = function (errors) {
     if (finished) return;
     finished = true;
     if (window.llex && window.llex.autosave) window.llex.autosave.stop();
     if (errors) result.errors = errors;
     process.stdout.write('__RESULT__' + JSON.stringify(result));
   };
-  var watchdog = setTimeout(function () { report(['harness: no result after 15s']); }, 15000);
+  var watchdog = setTimeout(function () { writeResult(['harness: no result after 15s']); }, 15000);
+  var describeFailure = function (e) { return { threw: String((e && e.stack) || e).slice(0, 600) }; };
 
   Promise.resolve(result.autosaveCheck)
-    .catch(function (e) { return { threw: String(e && e.stack || e) }; })
+    .catch(describeFailure)
     .then(function (settled) {
       result.autosaveCheck = settled;
+      return conflictSelection();
+    })
+    .catch(describeFailure)
+    .then(function (settled) {
+      result.conflictCheck = settled;
       return rewriteSelection();
     })
-    .catch(function (e) { return { threw: String((e && e.stack) || e).slice(0, 600) }; })
+    .catch(describeFailure)
     .then(function (settled) {
       result.rewriteCheck = settled;
       clearTimeout(watchdog);
-      report(null);
+      writeResult(null);
     });
   })().catch((e) => {
   if (window.llex && window.llex.autosave) window.llex.autosave.stop();
@@ -846,6 +952,62 @@ class TestFindAndReplace:
         script_dir = Path(__file__).resolve().parent.parent / "llex" / "static" / "js"
         for path in script_dir.glob("*.js"):
             assert "not implemented yet" not in path.read_text(encoding="utf-8"), path.name
+
+
+class TestConcurrentOpenIsResolvedByTheUser:
+    """A conflict has to be settled, not just announced.
+
+    The detection existed and worked; what it did not do was let anyone answer.
+    It flashed a message and restarted autosave a second later, so the window
+    that happened to save last won — which is the thing it was built to prevent.
+    ``acceptDiskVersion`` was correct, and called from nowhere.
+    """
+
+    @staticmethod
+    def probe(boot_result: dict[str, object]) -> dict[str, object]:
+        data = boot_result.get("conflictCheck")
+        assert isinstance(data, dict), "the conflict probe reported nothing"
+        assert "threw" not in data, data["threw"]
+        return data
+
+    def test_there_is_a_dialog_to_answer_with(self, boot_result: dict[str, object]) -> None:
+        probe = self.probe(boot_result)
+        assert probe["hasDialog"] is True
+        assert probe["startsHidden"] is True, "the dialog was open before anything happened"
+
+    def test_a_conflict_is_shown_rather_than_only_flashed(
+        self, boot_result: dict[str, object]
+    ) -> None:
+        probe = self.probe(boot_result)
+        assert probe["reported"] is True
+        assert probe["shown"] is True
+        assert probe["detailShown"] is True
+
+    def test_nothing_is_written_while_the_user_decides(
+        self, boot_result: dict[str, object]
+    ) -> None:
+        # The one-second restart this replaced: autosave coming back on its own
+        # during the decision is what made the detection pointless.
+        probe = self.probe(boot_result)
+        assert probe["timersStopped"] is True
+
+    def test_keeping_this_window_overwrites_the_file_and_carries_on(
+        self, boot_result: dict[str, object]
+    ) -> None:
+        probe = self.probe(boot_result)
+        assert probe["keepWrote"] is True
+        assert probe["keepClosed"] is True
+        assert probe["timersResumed"] is True
+
+    def test_taking_the_version_on_disk_replaces_the_document(
+        self, boot_result: dict[str, object]
+    ) -> None:
+        probe = self.probe(boot_result)
+        assert probe["secondReported"] is True
+        assert probe["modalShownForSecond"] is True
+        assert probe["diskLoaded"] is True
+        assert probe["diskClearedDirty"] is True
+        assert probe["diskWroteNothing"] is True, "reloading wrote over the file it read"
 
 
 class TestRewriteReplacesTheSelection:

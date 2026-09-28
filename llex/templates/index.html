@@ -389,6 +389,23 @@
   </div>
 </div>
 
+<!-- Concurrent-open conflict.
+     Two windows on one file means somebody else's work is on disk. Reporting it
+     is only half of it: something has to let the user choose, or the choice is
+     made for them by whichever save lands last. -->
+<div id="conflict-modal" class="modal" role="dialog" aria-modal="true" aria-labelledby="conflict-title" hidden>
+  <div class="modal-body">
+    <h2 id="conflict-title">This file changed outside LLex</h2>
+    <p class="modal-note" id="conflict-detail" role="status" aria-live="polite"></p>
+    <p class="modal-note">Choosing the version on disk discards the changes in this window. Choosing to keep this window's version overwrites the file, and the version on disk is kept as a backup.</p>
+
+    <div class="modal-actions">
+      <button type="button" id="btn-conflict-keep" class="btn btn-secondary">Keep this window</button>
+      <button type="button" id="btn-conflict-disk" class="btn btn-primary">Use the file on disk</button>
+    </div>
+  </div>
+</div>
+
 <!-- The way out of focus mode.
      Focus mode hides the menu bar and the ribbon, and with them the menu item
      that turned it on, so without a control of its own it is a one-way door
