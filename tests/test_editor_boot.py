@@ -439,6 +439,125 @@ window.AbortController = AbortController;
     });
   })();
 
+  // Menu wiring and the shortcut table.
+  //
+  // Both were checkable only by clicking things in a browser. "No dead commands"
+  // used to mean "no file contains the words not implemented yet", which a menu
+  // item wired to nothing passes.
+  result.menuIds = (function () {
+    var found = {};
+    var doc = dom.window.document;
+    [
+      'menu-undo', 'menu-redo', 'menu-cut', 'menu-copy', 'menu-paste',
+      'menu-select-all', 'menu-zoom-in', 'menu-zoom-out', 'menu-zoom-reset',
+      'menu-bold', 'menu-italic', 'menu-underline', 'menu-strikethrough',
+      'menu-highlight', 'menu-clear-format', 'menu-bullet', 'menu-number',
+      'menu-indent-increase', 'menu-indent-decrease', 'menu-move-up',
+      'menu-move-down', 'menu-page-break', 'menu-heading-1', 'menu-heading-2',
+      'menu-heading-3', 'menu-body-text', 'menu-link', 'menu-image',
+      'menu-horizontal-rule', 'menu-word-count', 'menu-find-next',
+    ].forEach(function (id) { found[id] = Boolean(doc.getElementById(id)); });
+    return found;
+  })();
+
+  // Menu items that exist in the markup but were never wired to a handler.
+  //
+  // This compares the DOM against the ids the menu module actually attached
+  // listeners to, so a new item added to the template and forgotten shows up
+  // here. The File and Edit menus were full of those, and "no dead commands" used
+  // to mean only that no file contained the words "not implemented yet".
+  result.deadMenuItems = (function () {
+    var doc = dom.window.document;
+    var menus = window.llex.menus || {};
+    var wired = menus.wiredIds || [];
+    var dead = [];
+    doc.querySelectorAll('.dropdown-menu button[role="menuitem"], .dropdown-menu button[role="menuitemcheckbox"]')
+      .forEach(function (item) {
+        if (item.classList.contains('nested-trigger')) return;
+        if (item.dataset.export !== undefined) return;
+        // The context menu's Cut/Copy/Paste carry `data-action` and are dispatched
+        // by the context-menu module rather than by id.
+        if (item.dataset.action !== undefined) return;
+        if (wired.indexOf(item.id) !== -1) return;
+        dead.push(item.id || item.textContent.trim().slice(0, 24));
+      });
+    return dead;
+  })();
+
+  result.shortcutCheck = (function () {
+    if (!window.llex || !window.llex.shortcuts) return { count: 0, unbound: ['not loaded'] };
+    return {
+      count: window.llex.shortcuts.SHORTCUTS.length,
+      unbound: window.llex.shortcuts.unbound(),
+    };
+  })();
+
+  // Page break, through the real ribbon button and the real paginator.
+  //
+  // A function, not an immediately-invoked one, so it runs when the chain gets
+  // to it rather than at load time -- alongside the probes it would race.
+  function pageBreakCheck() {
+    var ed = window.llex.editor;
+    var doc = dom.window.document;
+    var out = {};
+    var button = doc.getElementById('btn-page-break');
+    if (!button || !window.llex.paginator) return { skipped: true };
+
+    var pageCount = function () {
+      return ed.state.doc.childCount;
+    };
+    var blocksOn = function (index) {
+      var found = [];
+      var page = ed.state.doc.child(index);
+      page.forEach(function (block) { found.push(block.textContent); });
+      return found;
+    };
+
+    // Reflow is driven through the plugin, which runs inside the click's
+    // transaction, so one settle is enough. The bounded loop is a safety net
+    // rather than the mechanism: an unbounded poll here would hang the harness
+    // instead of failing it, which is the failure mode this file already had.
+    var settle = function (ms) {
+      return new Promise(function (resolve) { setTimeout(resolve, ms); });
+    };
+    var reflowUntil = function (wanted, tries) {
+      if (pageCount() === wanted || tries <= 0) return Promise.resolve(pageCount() === wanted);
+      window.llex.paginator.apply();
+      return settle(20).then(function () { return reflowUntil(wanted, tries - 1); });
+    };
+
+    ed.commands.setContent(
+      '<div class="page"><p>alpha</p><p>beta</p><p>gamma</p></div>'
+    );
+    // Inside the *second* block. A break on the first block of a page is already
+    // satisfied -- there is nothing before it to break away from -- and the
+    // paginator deliberately does not create an empty page for it.
+    ed.commands.setTextSelection(1 + ed.state.doc.child(0).child(0).nodeSize + 1);
+    out.pagesBefore = pageCount();
+    out.brokeSecondBlock = ed.state.selection.$from.parent.textContent === 'beta';
+
+    button.click();
+    return reflowUntil(2, 8).then(function () {
+      out.pagesAfter = pageCount();
+      out.splitAfter = blocksOn(0).join(',');
+      var all = [];
+      for (var i = 0; i < pageCount(); i += 1) {
+        blocksOn(i).forEach(function (text) { all.push(text); });
+      }
+      out.textIntact = all.join(',') === 'alpha,beta,gamma';
+      out.breakSurvived = ed.getAttributes('paragraph').breakBefore === true;
+
+      // And the same button takes it back out again.
+      button.click();
+      return reflowUntil(1, 8);
+    }).then(function () {
+      out.pagesAfterToggleOff = pageCount();
+      ed.commands.setTextSelection(2);
+      out.attributeCleared = ed.getAttributes('paragraph').breakBefore === false;
+      return out;
+    });
+  }
+
   // Concurrent-open conflict, through the real dialog.
   //
   // The bug this guards: a conflict used to flash a message and then restart
@@ -665,11 +784,19 @@ window.AbortController = AbortController;
     .catch(describeFailure)
     .then(function (settled) {
       result.autosaveCheck = settled;
+      // Sequential, not concurrent: the conflict probe replaces the document
+      // wholesale, so a page-break probe running alongside it would be asserting
+      // about content that no longer exists.
       return conflictSelection();
     })
     .catch(describeFailure)
     .then(function (settled) {
       result.conflictCheck = settled;
+      return pageBreakCheck();
+    })
+    .catch(describeFailure)
+    .then(function (settled) {
+      result.pageBreakCheck = settled;
       return rewriteSelection();
     })
     .catch(describeFailure)
@@ -952,6 +1079,73 @@ class TestFindAndReplace:
         script_dir = Path(__file__).resolve().parent.parent / "llex" / "static" / "js"
         for path in script_dir.glob("*.js"):
             assert "not implemented yet" not in path.read_text(encoding="utf-8"), path.name
+
+
+class TestNoDeadMenuItems:
+    """Every menu entry has to do something.
+
+    The File and Edit menus were full of items that did nothing at all, and the
+    formatting toolbar advertised ``Ctrl+Enter`` for a page break that changed
+    nothing visible. Both look fine in a screenshot, so they are checked here
+    against the real DOM and the real shortcut table.
+    """
+
+    @pytest.mark.parametrize(
+        "item_id",
+        [
+            "menu-undo", "menu-redo", "menu-cut", "menu-copy", "menu-paste",
+            "menu-select-all", "menu-zoom-in", "menu-zoom-out", "menu-zoom-reset",
+            "menu-bold", "menu-italic", "menu-underline", "menu-strikethrough",
+            "menu-highlight", "menu-clear-format", "menu-bullet", "menu-number",
+            "menu-indent-increase", "menu-indent-decrease", "menu-move-up",
+            "menu-move-down", "menu-page-break", "menu-heading-1", "menu-heading-2",
+            "menu-heading-3", "menu-body-text", "menu-link", "menu-image",
+            "menu-horizontal-rule", "menu-word-count", "menu-find-next",
+        ],
+    )
+    def test_the_item_exists(self, boot_result: dict[str, object], item_id: str) -> None:
+        assert boot_result.get("menuIds", {}).get(item_id) is True, f"{item_id} is missing"
+
+    def test_every_menu_item_is_wired_to_an_action(
+        self, boot_result: dict[str, object]
+    ) -> None:
+        dead = boot_result.get("deadMenuItems")
+        assert dead == [], f"menu items with no handler: {dead}"
+
+    def test_the_shortcut_table_is_loaded(self, boot_result: dict[str, object]) -> None:
+        check = boot_result.get("shortcutCheck") or {}
+        assert check.get("count", 0) > 30, "the shortcut table did not load"
+        assert check.get("unbound") == [], f"shortcuts with no action: {check.get('unbound')}"
+
+
+class TestPageBreakActuallyBreaksThePage:
+    """The page-break button was a no-op on screen.
+
+    The attribute was set, saved, exported and honoured by the stylesheet when
+    printing -- but nothing read it during reflow, which is what draws the pages
+    the user is looking at. The button's tooltip promised a page break and the
+    page did not change.
+    """
+
+    def test_the_reflow_moves_the_block_onto_a_new_page(
+        self, boot_result: dict[str, object]
+    ) -> None:
+        check = boot_result.get("pageBreakCheck") or {}
+        assert "threw" not in check, check.get("threw")
+        assert check.get("brokeSecondBlock") is True, "the cursor was not in the second block"
+        assert check.get("pagesBefore") == 1, "the fixture was not a single page"
+        assert check.get("pagesAfter") == 2, "the page break did not add a page"
+        # Only the first block stays behind; the break lands before the second.
+        assert check.get("splitAfter") == "alpha", check.get("splitAfter")
+        assert check.get("textIntact") is True
+        assert check.get("breakSurvived") is True, "the attribute was consumed"
+
+    def test_pressing_it_again_removes_the_break(
+        self, boot_result: dict[str, object]
+    ) -> None:
+        check = boot_result.get("pageBreakCheck") or {}
+        assert check.get("pagesAfterToggleOff") == 1, "the break could not be removed"
+        assert check.get("attributeCleared") is True
 
 
 class TestConcurrentOpenIsResolvedByTheUser:

@@ -40,7 +40,7 @@
       <button type="button" class="menu-title" aria-haspopup="true" aria-expanded="false">Edit</button>
       <div class="dropdown-menu" role="menu">
         <button type="button" class="dropdown-item" id="menu-undo" role="menuitem">Undo <kbd>Ctrl+Z</kbd></button>
-        <button type="button" class="dropdown-item" id="menu-redo" role="menuitem">Redo <kbd>Ctrl+Y</kbd></button>
+        <button type="button" class="dropdown-item" id="menu-redo" role="menuitem">Redo <kbd>Ctrl+Y</kbd> <kbd>Ctrl+Shift+Z</kbd></button>
         <div class="dropdown-divider" role="separator"></div>
         <button type="button" class="dropdown-item" id="menu-cut" role="menuitem">Cut <kbd>Ctrl+X</kbd></button>
         <button type="button" class="dropdown-item" id="menu-copy" role="menuitem">Copy <kbd>Ctrl+C</kbd></button>
@@ -49,6 +49,34 @@
         <button type="button" class="dropdown-item" id="menu-select-all" role="menuitem">Select All <kbd>Ctrl+A</kbd></button>
         <button type="button" class="dropdown-item" id="menu-find" role="menuitem">Find… <kbd>Ctrl+F</kbd></button>
         <button type="button" class="dropdown-item" id="menu-replace" role="menuitem">Replace&#8230; <kbd>Ctrl+H</kbd></button>
+        <button type="button" class="dropdown-item" id="menu-find-next" role="menuitem">Find Next <kbd>Ctrl+G</kbd></button>
+        <div class="dropdown-divider" role="separator"></div>
+        <div class="dropdown-item" role="none" aria-hidden="true"><span class="menu-label">Text&hellip;</span></div>
+        <button type="button" class="dropdown-item" id="menu-bold" role="menuitem">Bold <kbd>Ctrl+B</kbd></button>
+        <button type="button" class="dropdown-item" id="menu-italic" role="menuitem">Italic <kbd>Ctrl+I</kbd></button>
+        <button type="button" class="dropdown-item" id="menu-underline" role="menuitem">Underline <kbd>Ctrl+U</kbd></button>
+        <button type="button" class="dropdown-item" id="menu-strikethrough" role="menuitem">Strikethrough <kbd>Ctrl+Shift+X</kbd></button>
+        <button type="button" class="dropdown-item" id="menu-highlight" role="menuitem">Highlight <kbd>Ctrl+Shift+H</kbd></button>
+        <button type="button" class="dropdown-item" id="menu-clear-format" role="menuitem">Clear Formatting <kbd>Ctrl+Space</kbd></button>
+        <div class="dropdown-divider" role="separator"></div>
+        <div class="dropdown-item" role="none" aria-hidden="true"><span class="menu-label">Paragraph&hellip;</span></div>
+        <button type="button" class="dropdown-item" id="menu-bullet" role="menuitem">Bulleted List <kbd>Ctrl+Shift+8</kbd></button>
+        <button type="button" class="dropdown-item" id="menu-number" role="menuitem">Numbered List <kbd>Ctrl+Shift+7</kbd></button>
+        <button type="button" class="dropdown-item" id="menu-indent-increase" role="menuitem">Increase Indent <kbd>Tab</kbd></button>
+        <button type="button" class="dropdown-item" id="menu-indent-decrease" role="menuitem">Decrease Indent <kbd>Shift+Tab</kbd></button>
+        <button type="button" class="dropdown-item" id="menu-move-up" role="menuitem">Move Up <kbd>Ctrl+Alt+Up</kbd></button>
+        <button type="button" class="dropdown-item" id="menu-move-down" role="menuitem">Move Down <kbd>Ctrl+Alt+Down</kbd></button>
+        <button type="button" class="dropdown-item" id="menu-page-break" role="menuitem">Page Break <kbd>Ctrl+Enter</kbd></button>
+        <div class="dropdown-divider" role="separator"></div>
+        <div class="dropdown-item" role="none" aria-hidden="true"><span class="menu-label">Styles&hellip;</span></div>
+        <button type="button" class="dropdown-item" id="menu-heading-1" role="menuitem">Heading 1 <kbd>Ctrl+Alt+1</kbd></button>
+        <button type="button" class="dropdown-item" id="menu-heading-2" role="menuitem">Heading 2 <kbd>Ctrl+Alt+2</kbd></button>
+        <button type="button" class="dropdown-item" id="menu-heading-3" role="menuitem">Heading 3 <kbd>Ctrl+Alt+3</kbd></button>
+        <button type="button" class="dropdown-item" id="menu-body-text" role="menuitem">Body Text <kbd>Ctrl+Alt+0</kbd></button>
+        <div class="dropdown-divider" role="separator"></div>
+        <button type="button" class="dropdown-item" id="menu-link" role="menuitem">Link&hellip; <kbd>Ctrl+K</kbd></button>
+        <button type="button" class="dropdown-item" id="menu-image" role="menuitem">Image&hellip; <kbd>Ctrl+Alt+I</kbd></button>
+        <button type="button" class="dropdown-item" id="menu-horizontal-rule" role="menuitem">Horizontal Line <kbd>Ctrl+Alt+R</kbd></button>
       </div>
     </div>
 
@@ -58,6 +86,7 @@
         <button type="button" class="dropdown-item" id="menu-zoom-in" role="menuitem">Zoom In <kbd>Ctrl+=</kbd></button>
         <button type="button" class="dropdown-item" id="menu-zoom-out" role="menuitem">Zoom Out <kbd>Ctrl+-</kbd></button>
         <button type="button" class="dropdown-item" id="menu-zoom-reset" role="menuitem">Actual Size <kbd>Ctrl+0</kbd></button>
+        <button type="button" class="dropdown-item" id="menu-word-count" role="menuitem">Word Count <kbd>Ctrl+Shift+G</kbd></button>
         <div class="dropdown-divider" role="separator"></div>
         <button type="button" class="dropdown-item" id="menu-toggle-outline" role="menuitemcheckbox" aria-checked="false">Document Outline</button>
         <button type="button" class="dropdown-item" id="menu-toggle-assistant" role="menuitemcheckbox" aria-checked="false">LLex Assistant</button>
@@ -115,7 +144,8 @@
         <button type="button" id="btn-bold" class="btn icon-btn" title="Bold (Ctrl+B)" aria-label="Bold" aria-pressed="false"><b>B</b></button>
         <button type="button" id="btn-italic" class="btn icon-btn" title="Italic (Ctrl+I)" aria-label="Italic" aria-pressed="false"><i>I</i></button>
         <button type="button" id="btn-underline" class="btn icon-btn" title="Underline (Ctrl+U)" aria-label="Underline" aria-pressed="false"><u>U</u></button>
-        <button type="button" id="btn-strikethrough" class="btn icon-btn" title="Strikethrough" aria-label="Strikethrough" aria-pressed="false"><s>S</s></button>
+        <button type="button" id="btn-strikethrough" class="btn icon-btn" title="Strikethrough (Ctrl+Shift+X)" aria-label="Strikethrough" aria-pressed="false"><s>S</s></button>
+        <button type="button" id="btn-highlight" class="btn icon-btn" title="Highlight (Ctrl+Shift+H)" aria-label="Highlight" aria-pressed="false"><mark style="background:currentColor;color:transparent">H</mark></button>
       </div>
 
       <span class="separator" role="separator" aria-orientation="vertical"></span>
@@ -145,8 +175,8 @@
       <span class="separator" role="separator" aria-orientation="vertical"></span>
 
       <div class="toolbar-group" role="group" aria-label="Lists">
-        <button type="button" id="btn-bullet" class="btn icon-btn" title="Bulleted List" aria-label="Bulleted list" aria-pressed="false">&#8226;</button>
-        <button type="button" id="btn-number" class="btn icon-btn" title="Numbered List" aria-label="Numbered list" aria-pressed="false">1.</button>
+        <button type="button" id="btn-bullet" class="btn icon-btn" title="Bulleted List (Ctrl+Shift+8)" aria-label="Bulleted list" aria-pressed="false">&#8226;</button>
+        <button type="button" id="btn-number" class="btn icon-btn" title="Numbered List (Ctrl+Shift+7)" aria-label="Numbered list" aria-pressed="false">1.</button>
         <button type="button" id="btn-indent-increase" class="btn icon-btn" title="Increase Indent (Tab)" aria-label="Increase indent" aria-pressed="false"><svg class="align-icon" viewBox="0 0 16 16" aria-hidden="true" focusable="false"><path d="M6 2h9v2H6zM6 7h6v2H6zM6 12h9v2H6z"/><path d="M1.5 2.5 4 5H2.5v3h-1V5H0z" transform="translate(0 5)"/></svg></button>
         <button type="button" id="btn-indent-decrease" class="btn icon-btn" title="Decrease Indent (Shift+Tab)" aria-label="Decrease indent" aria-pressed="false"><svg class="align-icon" viewBox="0 0 16 16" aria-hidden="true" focusable="false"><path d="M6 2h9v2H6zM9 7h6v2H9zM6 12h9v2H6z"/><path d="M0 7.5 2.5 10H1.5v3h-1v-3h-1z" transform="translate(0 -3)"/></svg></button>
       </div>

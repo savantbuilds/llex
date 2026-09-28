@@ -44,6 +44,7 @@ import { createAutosave } from './autosave.js';
 import { createFileOperations } from './fileops.js';
 import { createSettings } from './settings.js';
 import { createMenus } from './menus.js';
+import { SHORTCUTS } from './shortcuts.js';
 import { createStatusBar } from './statusbar.js';
 import { api } from './api.js';
 import { byId, debounce, flash, require } from './dom.js';
@@ -262,6 +263,9 @@ async function boot() {
     onFind: () => find && find.open(),
     onImage: () => imagePanel && imagePanel.open(),
     onStatus: (message) => flash(status, message, 2500),
+    // Declared as a closure rather than passing the paginator, because the
+    // ribbon is built before it.
+    onRelayout: () => paginator.relayout(),
   });
   const outline = createOutline(editor);
 
@@ -536,12 +540,53 @@ async function boot() {
       saveAs: files.saveAs,
       open: files.open,
       newDocument: files.newDocument,
+    // The rest of the shortcut table, bound to the things that only exist
+    // here. `menus` resolves an action id to a function before it runs, so a
+    // shortcut whose action is not wired up falls through to the browser
+    // rather than swallowing the key and doing nothing.
+      new: files.newDocument,
+      // Items owned by other modules, so the boot harness can tell one that is
+      // wired elsewhere -- by `fileops` or here -- from one wired nowhere.
+      wiredElsewhere: [
+        'menu-new', 'menu-open', 'menu-save', 'menu-save-as',
+        'menu-find', 'menu-replace',
+        'menu-toggle-outline', 'menu-toggle-assistant',
+      ],
+      find: () => find && find.open(),
+      // `Ctrl+H` opens the same panel: it is one panel with both fields, so
+      // opening it focused on the query would mean the user has to click again.
+      replace: () => find && find.open(true),
+      findNext: () => find && find.go(1),
+      link: () => ribbon.toggleLink(),
+      image: () => imagePanel && imagePanel.open(),
+      // Search highlighting is a decoration drawn by the find plugin, not a mark
+    // in the document, so "highlight" here means the mark users expect from
+    // Ctrl+Shift+H: text they have marked, kept in the file.
+    highlight: () => editor.chain().focus().toggleMark('characterStyle', { textStyle: 'highlight' }).run(),
+      wordCount: () => {
+        // Recomputed rather than read from `state`, which is debounced and so can
+        // be up to 200ms behind the last keystroke.
+        const text = editor.getText();
+        const words = countWords(text);
+        const characters = countCharacters(text);
+        const pages = editor.view.dom.querySelectorAll('.page').length || 1;
+        const plural = (n, one, many) => `${n} ${n === 1 ? one : many}`;
+        flash(
+          status,
+          `${plural(words, 'word', 'words')}, ${plural(characters, 'character', 'characters')}, ${plural(pages, 'page', 'pages')}`,
+          4000,
+        );
+      },
+      moveBlock: (direction) => moveBlock(editor, direction),
       toggleOutline: () => togglePanel('left-sidebar', 'btn-toggle-outline'),
       toggleAssistant: () => togglePanel('sidebar', 'btn-toggle-sidebar'),
       onZoom: () => {
         paginator.schedule();
         window.setTimeout(() => paginator.apply(), 150);
       },
+      // Removing a page break has to re-flow from scratch: see the note on
+      // `pageBreak` in menus.js.
+      onRelayout: () => paginator.relayout(),
     },
   });
 
@@ -559,6 +604,49 @@ async function boot() {
     resizeTimer = window.setTimeout(() => paginator.apply(), 200);
   });
 
+  // -- Line moves --------------------------------------------------------- //
+
+  /**
+   * Move the block containing the cursor up or down the document.
+   *
+   * `Ctrl+Alt+Up` and `Alt+Up` are both muscle memory -- Word uses the first,
+   * Google Docs the second -- and neither is available from any menu, so this is
+   * the only way to reach them. A block moves as a unit and cannot leave its
+   * page, so the paginator re-flows the pair rather than stranding one of them.
+   *
+   * @param {import('@tiptap/core').Editor} editorInstance
+   * @param {number} direction -1 for up, 1 for down.
+   * @returns {boolean} Whether anything moved.
+   */
+  function moveBlock(editorInstance, direction) {
+    const { state, view } = editorInstance;
+    const $from = state.selection.$from;
+    if ($from.depth === 0) return false;
+    const top = $from.before($from.depth);
+    const node = state.doc.nodeAt(top);
+    if (!node) return false;
+    // The swap is a single replace over the same range in both directions, so
+    // undo treats a move as one step rather than as a delete plus an insert.
+    const targetTop = direction < 0 ? top - node.nodeSize : $from.after($from.depth);
+    if (targetTop < 0) return false;
+    const target = state.doc.nodeAt(targetTop);
+    if (!target || target.type !== node.type) return false;
+    const tr = state.tr;
+    if (direction < 0) {
+      // Swap in place: replace the pair with the same two nodes the other way
+      // round, so the move is one step on the undo stack.
+      tr.replaceWith(targetTop, top + node.nodeSize, [target, node]);
+    } else {
+      // Downwards: the pair spans from the current block to the next one, and
+      // the swap is expressed as removing the current block and re-inserting it
+      // after its sibling.
+      tr.delete(top, top + node.nodeSize);
+      tr.insert(targetTop - node.nodeSize + target.nodeSize, node);
+    }
+    view.dispatch(tr);
+    return true;
+  }
+
   // -- Go ----------------------------------------------------------------- //
 
   assistant.describe(environment.assistant);
@@ -574,7 +662,27 @@ async function boot() {
   window.setTimeout(() => paginator.apply(), 400);
 
   // Exposed deliberately, for debugging from the webview console.
-  window.llex = { editor, paginator, api, menus, settings, files, assistant, contextMenu, find, imagePanel, autosave, state };
+  window.llex = {
+  editor,
+  paginator,
+  api,
+  menus,
+  settings,
+  files,
+  assistant,
+  contextMenu,
+  find,
+  imagePanel,
+  autosave,
+  state,
+  // The shortcut table, and a check that every entry in it resolves to an
+  // action. Published so a binding cannot be advertised without being wired:
+  // a shortcut that does nothing is invisible in a screenshot.
+  shortcuts: {
+    SHORTCUTS,
+    unbound: () => SHORTCUTS.filter((entry) => !menus.hasAction(entry.run)).map((entry) => entry.keys),
+  },
+};
 }
 
 function start() {

@@ -28,6 +28,7 @@ import {
   applyReflow,
   collapseToSinglePage,
   measureOverflow,
+  planForcedBreak,
   planKeepWithNext,
   planPage,
 } from './pagination.js';
@@ -111,6 +112,21 @@ export function reflowTransaction(state, container, pinned) {
       grown.push(pageIndex);
       continue;
     }
+    const step = applyReflow(state, plan);
+    if (!step) continue;
+    transaction = transaction ? transaction.step(step) : step;
+    moved += 1;
+  }
+
+  // A manual page break is honoured first. Both other passes can move blocks
+  // across a boundary the user chose, and a break that is applied after them
+  // would produce a page that is not the one the user asked for. It also cannot
+  // be detected from the layout: a page that already ends exactly where the
+  // break is looks identical to one that has not been applied.
+  const forcedCount = state.doc.childCount;
+  for (let pageIndex = 0; pageIndex < forcedCount; pageIndex += 1) {
+    const plan = planForcedBreak(state.doc, pageIndex, pinned);
+    if (!plan) continue;
     const step = applyReflow(state, plan);
     if (!step) continue;
     transaction = transaction ? transaction.step(step) : step;

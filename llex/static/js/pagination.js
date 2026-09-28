@@ -133,6 +133,76 @@ export function countKeepWithNextTail(doc, pageIndex) {
 }
 
 /**
+ * Whether a block carries a manual page break.
+ *
+ * Checked against the attribute rather than the spec, so a node type that does
+ * not declare `breakBefore` simply reports `false` instead of throwing.
+ *
+ * @param {import('@tiptap/pm/model').Node} node
+ * @returns {boolean}
+ */
+export function breaksBefore(node) {
+  return node.attrs.breakBefore === true;
+}
+
+/**
+ * The first block in a page that begins after a manual page break.
+ *
+ * The `data-page-break-before` attribute was rendered and honoured by the
+ * stylesheet for print, but nothing ever read it during reflow, so pressing
+ * "Page break" set an attribute that changed nothing on screen. This is that
+ * reader.
+ *
+ * @param {import('@tiptap/pm/model').Node} page
+ * @returns {number} Index within the page, or -1 when there is none.
+ */
+export function findForcedBreak(page) {
+  let found = -1;
+  let index = 0;
+  page.forEach((child) => {
+    if (found === -1 && breaksBefore(child)) found = index;
+    index += 1;
+  });
+  return found;
+}
+
+/**
+ * Plan the split that honours a manual page break.
+ *
+ * Everything from the break to the end of the page moves to a new page. Unlike an
+ * overflow split this is never a compromise: the user asked for it, so a page is
+ * allowed to end early, and a break on the first block of a page is already
+ * satisfied and produces no plan rather than an empty page.
+ *
+ * A page with nothing to break before is left alone, including the common case
+ * of a document whose blocks carry the attribute from a file that set it.
+ *
+ * @param {import('@tiptap/pm/model').Node} doc
+ * @param {number} pageIndex
+ * @param {ReadonlySet<number>} pinned
+ * @returns {ReflowPlan|null}
+ */
+export function planForcedBreak(doc, pageIndex, pinned) {
+  if (pinned.has(pageIndex)) return null;
+  const page = describePages(doc)[pageIndex];
+  if (!page) return null;
+
+  const at = findForcedBreak(doc.child(pageIndex));
+  // No break, or one already at the very top of the page.
+  if (at <= 0) return null;
+
+  const offset = page.childSizes.slice(0, at).reduce((total, size) => total + (size ?? 0), 0);
+  return {
+    kind: 'move',
+    pageIndex,
+    from: page.contentStart + offset,
+    to: page.lastChildStart + page.lastChildSize,
+    count: page.childCount - at,
+    targetIndex: pageIndex + 1,
+  };
+}
+
+/**
  * Plan the move that stops a page ending in a stranded heading.
  *
  * Deliberately not {@link planPage}: that refuses to leave fewer than

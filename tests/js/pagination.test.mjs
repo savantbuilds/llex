@@ -21,10 +21,13 @@ import {
   OVERFLOW_TOLERANCE,
   applyReflow,
   collapseToSinglePage,
+  breaksBefore,
   countKeepWithNextTail,
   countOverflowingTail,
   describePages,
+  findForcedBreak,
   keepsWithNext,
+  planForcedBreak,
   planKeepWithNext,
   planPage,
   startOfTrailingRun,
@@ -35,11 +38,21 @@ const schema = new Schema({
   nodes: {
     doc: { content: 'page+' },
     page: { content: 'block+', group: 'page' },
-    paragraph: { content: 'inline*', group: 'block' },
+    paragraph: {
+      content: 'inline*',
+      group: 'block',
+      // `breakBefore` is declared here as the editor declares it, so a test can
+      // build a document that carries a real manual page break.
+      attrs: { breakBefore: { default: false } },
+    },
     heading: {
       content: 'inline*',
       group: 'block',
-      attrs: { level: { default: 1 }, keepWithNext: { default: true } },
+      attrs: {
+        level: { default: 1 },
+        keepWithNext: { default: true },
+        breakBefore: { default: false },
+      },
     },
     text: { group: 'inline' },
   },
@@ -655,4 +668,112 @@ test('an overflowing document with a trailing heading needs only one fix', () =>
   assertValid(after.doc);
   const lastOfFirst = after.doc.child(0).lastChild;
   assert.equal(keepsWithNext(lastOfFirst), false, 'the heading should have moved');
+});
+// --------------------------------------------------------------------------
+// Manual page breaks
+// --------------------------------------------------------------------------
+
+test('a block that begins after a page break is found', () => {
+  const doc = buildTypedDoc([
+    [{ text: 'a' }, { text: 'b', attrs: { breakBefore: true } }, { text: 'c' }],
+  ]);
+  assert.equal(findForcedBreak(doc.child(0)), 1);
+  assert.equal(breaksBefore(doc.child(0).child(1)), true);
+  assert.equal(breaksBefore(doc.child(0).child(0)), false);
+});
+
+test('a page with no break reports none', () => {
+  const doc = buildTypedDoc([[{ text: 'a' }, { text: 'b' }]]);
+  assert.equal(findForcedBreak(doc.child(0)), -1);
+});
+
+test('a node type without the attribute is not a break', () => {
+  // The check is on the attribute, not the spec, so a block type that never
+  // declares `breakBefore` reports false instead of throwing.
+  const bare = { type: { spec: {} }, attrs: {} };
+  assert.equal(breaksBefore(bare), false);
+});
+
+test('a manual break splits the page it is on', () => {
+  // The bug this guards: the attribute was rendered, exported and honoured by
+  // the stylesheet for print, and nothing read it during reflow. Pressing the
+  // button changed nothing on screen.
+  const doc = buildTypedDoc([
+    [{ text: 'a' }, { text: 'b', attrs: { breakBefore: true } }, { text: 'c' }],
+  ]);
+  const state = buildState(doc);
+  const result = reflowTransaction(state, fakeContainer(1, { overflows: false }), new Set());
+  assert.ok(result, 'a manual page break produced no reflow');
+  assert.equal(result.moved, 1);
+
+  const after = state.apply(result.transaction);
+  assertValid(after.doc);
+  assert.equal(after.doc.childCount, 2);
+  assert.deepEqual(blocksOf(after.doc, 0), ['a']);
+  assert.deepEqual(blocksOf(after.doc, 1), ['b', 'c']);
+});
+
+test('a break on the first block of a page needs no split', () => {
+  // Otherwise every page carrying the attribute grows an empty one before it.
+  const doc = buildTypedDoc([
+    [{ text: 'a', attrs: { breakBefore: true } }, { text: 'b' }],
+  ]);
+  const state = buildState(doc);
+  assert.equal(reflowTransaction(state, fakeContainer(1, { overflows: false }), new Set()), null);
+});
+
+test('a break on a page that has already been honoured is left alone', () => {
+  const doc = buildTypedDoc([
+    [{ text: 'a' }, { text: 'b' }],
+    [{ text: 'c', attrs: { breakBefore: true } }, { text: 'd' }],
+  ]);
+  const state = buildState(doc);
+  // Idempotent: reflowing again must not keep moving blocks along.
+  assert.equal(reflowTransaction(state, fakeContainer(2, { overflows: false }), new Set()), null);
+});
+
+test('a manual break is honoured even on a page that fits perfectly', () => {
+  // The whole point of a manual break: the user asked for it, so the page is
+  // allowed to end early. Nothing about this is an overflow.
+  const doc = buildTypedDoc([
+    [{ text: 'a' }, { text: 'b', attrs: { breakBefore: true } }, { text: 'c' }],
+  ]);
+  const state = buildState(doc);
+  const plan = planForcedBreak(state.doc, 0, new Set());
+  assert.ok(plan);
+  assert.equal(plan.kind, 'move');
+  assert.equal(plan.targetIndex, 1);
+  assert.equal(plan.count, 2);
+});
+
+test('a break on the last page moves onto a page of its own', () => {
+  // The break is honoured by starting a new page, which is the point of it --
+  // the alternative, refusing to break the last page, would make the button do
+  // nothing exactly when the document ends with one.
+  const doc = buildTypedDoc([
+    [{ text: 'a' }, { text: 'b' }],
+    [{ text: 'c' }, { text: 'd', attrs: { breakBefore: true } }],
+  ]);
+  const state = buildState(doc);
+  const result = reflowTransaction(state, fakeContainer(2, { overflows: false }), new Set());
+  assert.ok(result);
+  const after = state.apply(result.transaction);
+  assertValid(after.doc);
+  assert.equal(after.doc.childCount, 3);
+  assert.deepEqual(blocksOf(after.doc, 1), ['c']);
+  assert.deepEqual(blocksOf(after.doc, 2), ['d']);
+});
+
+test('a pinned page is not split by its own break', () => {
+  const doc = buildTypedDoc([
+    [{ text: 'a' }, { text: 'b', attrs: { breakBefore: true } }],
+  ]);
+  const state = buildState(doc);
+  assert.equal(planForcedBreak(state.doc, 0, new Set([0])), null);
+});
+
+test('an out-of-range page index is answered, not crashed on', () => {
+  const doc = buildTypedDoc([[{ text: 'a' }]]);
+  assert.equal(planForcedBreak(doc, 7, new Set()), null);
+  assert.equal(planForcedBreak(doc, -1, new Set()), null);
 });

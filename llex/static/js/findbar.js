@@ -67,7 +67,15 @@ export function createFind(editor, options = {}) {
 
   controller.onChange = renderCount;
 
-  function open() {
+  /**
+   * Open the panel.
+   *
+   * @param {boolean} [forReplace] Open with the replace field focused, which is
+   *   what `Ctrl+H` is for. One panel serves both shortcuts, and a user who
+   *   pressed "replace" and then had to click into the replace box has been told
+   *   the wrong thing by the key they pressed.
+   */
+  function open(forReplace = false) {
     panel.hidden = false;
     panel.style.display = 'flex';
     // Pre-fill with the selection, which is what makes Ctrl+F useful: the
@@ -77,8 +85,9 @@ export function createFind(editor, options = {}) {
       const selected = editor.state.doc.textBetween(from, to, ' ');
       if (selected && !selected.includes('\n')) queryField.value = selected;
     }
-    queryField.focus();
-    queryField.select();
+    const target = forReplace && replaceField ? replaceField : queryField;
+    target.focus();
+    target.select();
     rerun();
   }
 
@@ -171,5 +180,5 @@ export function createFind(editor, options = {}) {
 
   byId('find-shortcut')?.replaceChildren(document.createTextNode(SHORTCUT_HINT));
 
-  return { open, close, rerun, controller };
+  return { open, close, rerun, go, controller };
 }

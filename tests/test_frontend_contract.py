@@ -367,10 +367,13 @@ class TestScriptTargetsExist:
         assert "exitFocusMode" in menus
         assert "Escape" in menus and "exitFocusMode()" in menus
         # The keyboard handler must not be behind the modifier gate, or Escape
-        # would do nothing.
+        # would do nothing. The gate is now the shortcut table rather than a
+        # `hasModifier` call, so the check is against that lookup: an Escape
+        # handled after it would never run, because Escape has no modifier and
+        # so never matches a binding.
         escape_at = menus.index("event.key === 'Escape'")
-        modifier_at = menus.index("hasModifier(event)")
-        assert escape_at < modifier_at, "Escape is checked after the modifier gate"
+        gate_at = menus.index("shortcutFor(event")
+        assert escape_at < gate_at, "Escape is checked after the shortcut lookup"
 
         styles = STYLES.read_text(encoding="utf-8")
         rule = styles.split(".focus-exit {", 1)[1].split("}", 1)[0]

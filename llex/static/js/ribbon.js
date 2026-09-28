@@ -97,7 +97,17 @@ export function createRibbon(editor, hooks = {}) {
           .run();
       },
     ],
-    ['btn-page-break', () => editor.chain().focus().setPageBreakBefore(true).run()],
+    // Toggles, so the button can undo what it just did -- and so the shortcut
+    // cannot leave a break the user cannot see or remove.
+    // Removing a break needs the page set recomputed: the split is already in
+    // the document, and no overflow is involved, so no reflow pass would put the
+    // blocks back.
+    ['btn-page-break', () => {
+      const on = Boolean(editor.getAttributes('paragraph').breakBefore);
+      const result = editor.chain().focus().setPageBreakBefore(!on).run();
+      if (on && hooks.onRelayout) hooks.onRelayout();
+      return result;
+    }],
     ['btn-image', () => hooks.onImage && hooks.onImage()],
     ['btn-find', () => hooks.onFind && hooks.onFind()],
   ];
@@ -224,6 +234,10 @@ export function createRibbon(editor, hooks = {}) {
     markActive(buttons.get('btn-italic'), editor.isActive('italic'));
     markActive(buttons.get('btn-underline'), editor.isActive('underline'));
     markActive(buttons.get('btn-strikethrough'), editor.isActive('strike'));
+    markActive(
+      buttons.get('btn-highlight'),
+      editor.isActive('characterStyle', { textStyle: 'highlight' }),
+    );
     markActive(buttons.get('btn-align-left'), editor.isActive({ textAlign: 'left' }));
     markActive(buttons.get('btn-align-center'), editor.isActive({ textAlign: 'center' }));
     markActive(buttons.get('btn-align-right'), editor.isActive({ textAlign: 'right' }));
