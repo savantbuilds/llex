@@ -91,6 +91,23 @@ window.AbortController = AbortController;
   Object.defineProperty(window.Element.prototype, 'clientHeight', {
     configurable: true, get() { return 1056; },
   });
+  // jsdom does not implement getClientRects at all, so calling it throws
+  // "is not a function" as an uncaught error. Real browsers have it, and both
+  // elements and ranges legitimately use it, so the harness supplies the empty
+  // result a zero-layout node would give. Left unshimmed this only showed up
+  // once a probe kept the process alive long enough to hit it.
+  var emptyRects = function () {
+    return Object.assign([], { item: function () { return null; } });
+  };
+  window.Element.prototype.getClientRects = emptyRects;
+  if (window.Range) {
+    window.Range.prototype.getClientRects = emptyRects;
+    // Ranges are zero-sized and unlaid out here, which is exactly what jsdom
+    // already reports for elements.
+    window.Range.prototype.getBoundingClientRect = function () {
+      return { top: 0, left: 0, bottom: 0, right: 0, width: 0, height: 0, x: 0, y: 0 };
+    };
+  }
 
   try {
     window.eval(fs.readFileSync(bundlePath, 'utf8'));
@@ -422,16 +439,141 @@ window.AbortController = AbortController;
     });
   })();
 
+  // Rewrite Selection. The button is named for what it does, so this checks that
+  // it does -- and that it replaces the range the user *selected*, rather than
+  // wherever the caret happened to be when a slow model finally answered.
+  //
+  // It runs after everything else has settled, not alongside it. Several probes
+  // undo their own edits, and an undo() landing while this one waits for the
+  // model would put the old content back underneath the exact-text assertion.
+  function rewriteSelection() {
+    var doc = dom.window.document;
+    var ed = window.llex.editor;
+    var out = {};
+    var button = doc.getElementById('btn-rewrite');
+    var output = doc.getElementById('llm-output');
+    var fullText = function () { return ed.state.doc.textBetween(0, ed.state.doc.content.size, '\n'); };
+    // A throw inside a timer callback escapes the try/catch around a synchronous
+    // probe, and an unsettled promise here means no result is ever written. So
+    // every step settles, and every failure is reported as data.
+    var settle = function (ms, body) {
+      return new Promise(function (resolve) {
+        setTimeout(function () {
+          try { body(); } catch (e) { out.threw = String((e && e.stack) || e).slice(0, 600); }
+          resolve(out);
+        }, ms);
+      });
+    };
+
+    // The assistant holds the same api object it was built with, so replacing a
+    // method on it reaches the assistant; swapping `window.llex.api` would not.
+    //
+    // Everything the app uses to *load* a document is stubbed out too: the editor
+    // was fed the fixture at boot, and an in-flight request landing during the
+    // probe would overwrite the content under test.
+    var real = {};
+    ['document', 'environment', 'setContent', 'autosave', 'save'].forEach(function (name) {
+      real[name] = window.llex.api[name];
+      window.llex.api[name] = function () { return Promise.resolve({ html: ed.getHTML() }); };
+    });
+    var release = null;
+    window.llex.api.rewrite = function () {
+      return new Promise(function (resolve) { release = resolve; });
+    };
+    var restore = function () {
+      Object.keys(real).forEach(function (name) { window.llex.api[name] = real[name]; });
+    };
+
+    // The probe owns the document state it asserts on, so it sets it outright.
+    ed.commands.setContent('<div class="page"><p>the meeting was moved to friday</p></div>');
+    // Read it back rather than assuming: the paginator may have re-flowed it.
+    var before = fullText();
+    // A word the result does not itself contain, so "'moved' is still there" is a
+    // meaningful check rather than a coincidence.
+    var needle = 'moved';
+    out.needleFound = before.indexOf(needle) !== -1;
+    // Located by scanning document positions, not by indexing the text: a text
+    // offset is not a document position, because positions count the node
+    // boundaries the text projection does not. Bounded, so a failure here cannot
+    // hang the harness.
+    var from = -1;
+    for (var pos = 0; pos < ed.state.doc.content.size && from < 0; pos += 1) {
+      if (ed.state.doc.textBetween(pos, pos + needle.length, '') === needle) from = pos;
+    }
+    out.foundPosition = from >= 0;
+    if (from < 0) {
+      // Reported rather than guessed at: guessing here is what made an earlier
+      // version of this probe pass without testing anything.
+      out.skipped = 'the probe word is not in the document';
+      restore();
+      return Promise.resolve(out);
+    }
+    ed.commands.setTextSelection({ from: from, to: from + needle.length });
+    out.selectedIsNeedle = ed.state.doc.textBetween(
+      ed.state.selection.from, ed.state.selection.to, '') === needle;
+
+    button.click();
+    out.started = release !== null;
+
+    // The user clicks somewhere else while the model is thinking.
+    ed.commands.setTextSelection(1);
+    out.selectionMoved = ed.state.selection.from !== from;
+    out.caretAfterMove = ed.state.selection.from;
+
+    var expected = 'The meeting was rescheduled for Friday.';
+    release({ result: expected });
+
+    return settle(60, function () {
+      // Exact: the old text with the selected substring replaced, nothing else.
+      out.exactReplacement = fullText() === before.replace(needle, expected);
+      out.replacedText = fullText().indexOf(expected) !== -1;
+      out.oldTextGone = fullText().indexOf(needle) === -1;
+      // The result sits at the captured range, not at the caret it moved to.
+      out.landsAtSelection = ed.state.doc.textBetween(from, from + expected.length, ' ') === expected;
+      out.notAtCaret = from !== out.caretAfterMove;
+      out.outputShown = output.textContent.indexOf('rescheduled') !== -1;
+
+      // With nothing selected it must decline rather than take the document.
+      out.beforeDecline = fullText();
+      ed.commands.setTextSelection(1);
+      button.click();
+    })
+      .then(function () {
+        return settle(60, function () {
+          out.declinesWithoutSelection = fullText() === out.beforeDecline;
+          out.declineMessage = output.textContent;
+        });
+      })
+      .then(function () { restore(); return out; });
+  }
+
+  // A probe that never settles would leave the autosave timers running and the
+  // process alive, so the run would time out with nothing to explain it. Give up
+  // loudly instead, and stop the timers either way.
+  var finished = false;
+  var report = function (errors) {
+    if (finished) return;
+    finished = true;
+    if (window.llex && window.llex.autosave) window.llex.autosave.stop();
+    if (errors) result.errors = errors;
+    process.stdout.write('__RESULT__' + JSON.stringify(result));
+  };
+  var watchdog = setTimeout(function () { report(['harness: no result after 15s']); }, 15000);
+
   Promise.resolve(result.autosaveCheck)
     .catch(function (e) { return { threw: String(e && e.stack || e) }; })
     .then(function (settled) {
       result.autosaveCheck = settled;
-      // The autosave timers keep the event loop alive, exactly as they do for the
-      // real window; stop them so the harness can exit.
-      if (window.llex && window.llex.autosave) window.llex.autosave.stop();
-      process.stdout.write('__RESULT__' + JSON.stringify(result));
+      return rewriteSelection();
+    })
+    .catch(function (e) { return { threw: String((e && e.stack) || e).slice(0, 600) }; })
+    .then(function (settled) {
+      result.rewriteCheck = settled;
+      clearTimeout(watchdog);
+      report(null);
     });
   })().catch((e) => {
+  if (window.llex && window.llex.autosave) window.llex.autosave.stop();
   process.stdout.write('__RESULT__' + JSON.stringify({ errors: ['harness: ' + (e.stack || e)] }));
 });
 """
@@ -704,6 +846,51 @@ class TestFindAndReplace:
         script_dir = Path(__file__).resolve().parent.parent / "llex" / "static" / "js"
         for path in script_dir.glob("*.js"):
             assert "not implemented yet" not in path.read_text(encoding="utf-8"), path.name
+
+
+class TestRewriteReplacesTheSelection:
+    """The button says it rewrites the selection, so it must.
+
+    The assistant waits on a local model, which can take seconds. Anything that
+    reads the selection *after* that wait is reading the wrong one: the user has
+    moved on. The probe below reproduces exactly that — it clicks Rewrite, moves
+    the caret, and only then lets the model answer.
+    """
+
+    @staticmethod
+    def probe(boot_result: dict[str, object]) -> dict[str, object]:
+        data = boot_result.get("rewriteCheck")
+        assert isinstance(data, dict), "the rewrite probe reported nothing"
+        assert "threw" not in data, data["threw"]
+        assert "skipped" not in data, data["skipped"]
+        return data
+
+    def test_the_model_is_asked_for_the_selected_words(self, boot_result: dict[str, object]) -> None:
+        probe = self.probe(boot_result)
+        assert probe["needleFound"] and probe["foundPosition"]
+        assert probe["selectedIsNeedle"] is True
+        assert probe["started"] is True, "clicking the button did not reach the model"
+
+    def test_it_replaces_exactly_the_selected_text(self, boot_result: dict[str, object]) -> None:
+        probe = self.probe(boot_result)
+        assert probe["exactReplacement"] is True
+        assert probe["replacedText"] is True
+        assert probe["oldTextGone"] is True
+
+    def test_the_result_lands_where_the_user_pointed(self, boot_result: dict[str, object]) -> None:
+        probe = self.probe(boot_result)
+        assert probe["selectionMoved"] is True, "the probe failed to move the caret"
+        assert probe["notAtCaret"] is True
+        assert probe["landsAtSelection"] is True, "the rewrite went to the caret, not the selection"
+
+    def test_the_result_is_also_shown(self, boot_result: dict[str, object]) -> None:
+        probe = self.probe(boot_result)
+        assert probe["outputShown"] is True
+
+    def test_it_declines_when_nothing_is_selected(self, boot_result: dict[str, object]) -> None:
+        probe = self.probe(boot_result)
+        assert probe["declinesWithoutSelection"] is True
+        assert "select" in str(probe["declineMessage"]).lower()
 
 
 class TestUndoAndPagination:

@@ -5,10 +5,12 @@ from __future__ import annotations
 import json
 import threading
 from http.server import BaseHTTPRequestHandler, HTTPServer
+from pathlib import Path
 from typing import Any, ClassVar
 
 import pytest
 
+from llex import settings as llex_settings
 from llex.llm import (
     AssistantResponseError,
     AssistantUnavailableError,
@@ -20,6 +22,23 @@ from llex.llm import (
     split_sentences,
     strip_inference_noise,
 )
+
+
+@pytest.fixture(autouse=True)
+def isolated_settings(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep the real user settings file out of these tests, in both directions.
+
+    The bridge deliberately prefers the model the user chose in the app over the
+    environment. That is the intended behaviour, and it also means these tests
+    only pass on a machine that has never opened the model picker: a saved
+    endpoint makes every "offline by default" assertion fail, and every
+    environment-only assertion read the saved model instead of the one the test
+    set. Reading the developer's own settings would make the suite depend on
+    what they happen to have configured, and writing to it would be worse.
+    """
+    monkeypatch.setattr(
+        llex_settings, "default_settings_path", lambda: tmp_path / "settings.json"
+    )
 
 FENCE = "```"
 PROSE = (
