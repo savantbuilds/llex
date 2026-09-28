@@ -82,15 +82,52 @@ window.AbortController = AbortController;
   };
   globalThis.fetch = window.fetch;
 
-  // jsdom has no layout engine, so scrollHeight and clientHeight are both zero.
-  // Pinning them to the page height lets the paginator settle instead of
-  // looping; the overflow logic itself is unit-tested with real measurements.
+  // jsdom has no layout engine, so every measurement is zero and the paginator
+  // would report every page as fitting -- which is not "no pagination", it is
+  // pagination that cannot fail, so a bug in it cannot be seen here either.
+  //
+  // The page height is therefore derived from the page's own children: a page
+  // with six blocks in it overflows and a page with three does not. That makes
+  // the real reflow loop run over the real document, which is how the crash in
+  // `reflowTransaction` was found. Real geometry is still unit-tested.
+  var PAGE_HEIGHT = 1056;
+  var BLOCK_HEIGHT = 176;
+  var clientHeight = function () { return PAGE_HEIGHT; };
+  var scrollHeight = function () {
+    if (this.classList && this.classList.contains('page')) {
+      return this.children.length * BLOCK_HEIGHT;
+    }
+    return 0;
+  };
   Object.defineProperty(window.Element.prototype, 'scrollHeight', {
-    configurable: true, get() { return 1056; },
+    configurable: true, get: scrollHeight,
   });
   Object.defineProperty(window.Element.prototype, 'clientHeight', {
-    configurable: true, get() { return 1056; },
+    configurable: true, get: clientHeight,
   });
+  // Block geometry, from the block's position among its siblings. Without this
+  // every block measures zero high, the overflow pass concludes every page
+  // fits, and the paginator is exercised only in its "nothing to do" path.
+  window.Element.prototype.getBoundingClientRect = function () {
+    var parent = this.parentElement;
+    var index = 0;
+    if (parent) {
+      for (var i = 0; i < parent.children.length; i += 1) {
+        if (parent.children[i] === this) { index = i; break; }
+      }
+    }
+    var top = index * BLOCK_HEIGHT;
+    return {
+      top: top, bottom: top + BLOCK_HEIGHT, left: 0, right: 600,
+      width: 600, height: BLOCK_HEIGHT, x: 0, y: top,
+    };
+  };
+  // jsdom does not implement `scrollBy`, and the editor scrolls the selection
+  // into view after every transaction. Invisible until the layout stub started
+  // reporting real overflows, because then the reflow loop actually dispatches.
+  window.scrollBy = function () {};
+  window.scrollTo = function () {};
+
   // jsdom does not implement getClientRects at all, so calling it throws
   // "is not a function" as an uncaught error. Real browsers have it, and both
   // elements and ranges legitimately use it, so the harness supplies the empty
@@ -366,10 +403,26 @@ window.AbortController = AbortController;
       Array.from({ length: 6 }, function (_, i) { return '<p>filler ' + i + '</p>'; }).join('')
     );
 
-    Object.defineProperty(window.Element.prototype, 'scrollHeight', {
+    // Scoped, and restored afterwards. These redefine the prototype, so leaving
+    // them in place silently changes the layout every later probe measures --
+    // which is how a pagination probe reported one page for a document that
+    // should have been four.
+    var proto = window.Element.prototype;
+    var previous = {
+      scrollHeight: Object.getOwnPropertyDescriptor(proto, 'scrollHeight'),
+      clientHeight: Object.getOwnPropertyDescriptor(proto, 'clientHeight'),
+      rect: proto.getBoundingClientRect,
+    };
+    var restoreLayout = function () {
+      if (previous.scrollHeight) Object.defineProperty(proto, 'scrollHeight', previous.scrollHeight);
+      if (previous.clientHeight) Object.defineProperty(proto, 'clientHeight', previous.clientHeight);
+      proto.getBoundingClientRect = previous.rect;
+    };
+
+    Object.defineProperty(proto, 'scrollHeight', {
       configurable: true, get() { return 400; },
     });
-    Object.defineProperty(window.Element.prototype, 'clientHeight', {
+    Object.defineProperty(proto, 'clientHeight', {
       configurable: true, get() { return 300; },
     });
     Array.prototype.forEach.call(ed.view.dom.children, function (page) {
@@ -388,6 +441,7 @@ window.AbortController = AbortController;
     // One undo must take both the typing and the pagination it caused.
     ed.commands.undo();
     out.undoRemovedText = ed.getHTML().indexOf('typed by the test') === -1;
+    restoreLayout();
     return out;
   })();
 
@@ -554,6 +608,58 @@ window.AbortController = AbortController;
       out.pagesAfterToggleOff = pageCount();
       ed.commands.setTextSelection(2);
       out.attributeCleared = ed.getAttributes('paragraph').breakBefore === false;
+      return out;
+    });
+  }
+
+  // Pagination over a document long enough to need several pages.
+  //
+  // The harness used to pin scrollHeight to a constant, so no page ever
+  // overflowed, the reflow loop never iterated, and a crash in it could not be
+  // seen from here. The layout stub is now derived from the page's children, so
+  // this probe is the first thing to actually run the loop.
+  function paginationCheck() {
+    var ed = window.llex.editor;
+    var out = {};
+    if (!window.llex.paginator) return { skipped: true };
+
+    var blocks = [];
+    for (var i = 0; i < 20; i += 1) {
+      blocks.push('<p>paragraph ' + i + ' with enough words to be a real line of text</p>');
+    }
+    ed.commands.setContent('<div class="page">' + blocks.join('') + '</div>');
+
+    var textsOf = function () {
+      var all = [];
+      var doc = ed.state.doc;
+      doc.forEach(function (page) {
+        page.forEach(function (block) { all.push(block.textContent); });
+      });
+      return all;
+    };
+
+    // Bounded: a reflow that never settles must fail, not hang the harness.
+    var rounds = 0;
+    var settle = function () {
+      if (rounds >= 12) return Promise.resolve();
+      rounds += 1;
+      var before = ed.state.doc.childCount;
+      window.llex.paginator.apply();
+      if (ed.state.doc.childCount === before && rounds > 1) return Promise.resolve();
+      return new Promise(function (resolve) { setTimeout(resolve, 10); }).then(settle);
+    };
+
+    return settle().then(function () {
+      out.pages = ed.state.doc.childCount;
+      out.settled = rounds < 12;
+      var expected = [];
+      for (var n = 0; n < 20; n += 1) expected.push('paragraph ' + n + ' with enough words to be a real line of text');
+      var got = textsOf();
+      out.intact = got.length === expected.length && got.every(function (text, index) {
+        return text === expected[index];
+      });
+      out.blocks = got.length;
+      out.duplicated = got.length !== 20;
       return out;
     });
   }
@@ -792,6 +898,11 @@ window.AbortController = AbortController;
     .catch(describeFailure)
     .then(function (settled) {
       result.conflictCheck = settled;
+      return paginationCheck();
+    })
+    .catch(describeFailure)
+    .then(function (settled) {
+      result.paginationCheck = settled;
       return pageBreakCheck();
     })
     .catch(describeFailure)
@@ -1146,6 +1257,32 @@ class TestPageBreakActuallyBreaksThePage:
         check = boot_result.get("pageBreakCheck") or {}
         assert check.get("pagesAfterToggleOff") == 1, "the break could not be removed"
         assert check.get("attributeCleared") is True
+
+
+class TestPaginationRunsAtAll:
+    """The paginator has to survive a document that needs several pages.
+
+    The boot harness used to pin ``scrollHeight`` to a constant, so no page ever
+    overflowed: the reflow loop never iterated, and a crash inside it was
+    invisible from here. The layout stub is now derived from each page's
+    children, so this exercises the real loop.
+    """
+
+    @staticmethod
+    def probe(boot_result: dict[str, object]) -> dict[str, object]:
+        data = boot_result.get("paginationCheck")
+        assert isinstance(data, dict), "the pagination probe reported nothing"
+        assert "threw" not in data, data["threw"]
+        return data
+
+    def test_a_long_document_is_split(self, boot_result: dict[str, object]) -> None:
+        probe = self.probe(boot_result)
+        assert probe.get("settled") is True, "reflow never settled"
+        assert probe.get("pages", 0) > 1, "20 blocks produced a single page"
+
+    def test_no_block_is_lost_or_duplicated(self, boot_result: dict[str, object]) -> None:
+        probe = self.probe(boot_result)
+        assert probe.get("intact") is True, f"got {probe.get('blocks')} blocks, expected 20"
 
 
 class TestConcurrentOpenIsResolvedByTheUser:

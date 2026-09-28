@@ -101,55 +101,61 @@ export function reflowTransaction(state, container, pinned) {
   // its intrinsic size and would measure as fitting.
   const { overflowed, counts } = measuring(container, () => measureOverflow(container));
 
-  let transaction = null;
-  let moved = 0;
   const grown = [];
+  let moved = 0;
+
+  // Each pass plans against the document as the previous passes left it, and
+  // applies to a real state.
+  //
+  // The two obvious alternatives are both wrong. Composing the passes' own
+  // transactions -- `transaction.step(step)` -- throws, because `Transaction.step`
+  // takes a `Step` and `applyReflow` returns a `Transaction`; it has no `apply`
+  // method. And planning every pass against the original `state.doc` lets two
+  // passes plan over the same blocks, so a page that both overflows and carries a
+  // manual break moves its trailing blocks twice.
+  let current = state;
+  const tr = state.tr;
+  const apply = (plan) => {
+    const step = applyReflow(current, plan);
+    if (!step) return false;
+    // Applied to the accumulating transaction as individual steps, so it stays
+    // anchored to `state.doc` -- which is what `appendTransaction` is given.
+    for (const one of step.steps) tr.step(one);
+    current = current.apply(step);
+    moved += 1;
+    return true;
+  };
 
   for (const pageIndex of overflowed) {
-    const plan = planPage(state.doc, pageIndex, counts.get(pageIndex) || 0, pinned);
+    const plan = planPage(current.doc, pageIndex, counts.get(pageIndex) || 0, pinned);
     if (!plan) continue;
     if (plan.kind === 'grow') {
       grown.push(pageIndex);
       continue;
     }
-    const step = applyReflow(state, plan);
-    if (!step) continue;
-    transaction = transaction ? transaction.step(step) : step;
-    moved += 1;
+    apply(plan);
   }
 
-  // A manual page break is honoured first. Both other passes can move blocks
-  // across a boundary the user chose, and a break that is applied after them
-  // would produce a page that is not the one the user asked for. It also cannot
-  // be detected from the layout: a page that already ends exactly where the
-  // break is looks identical to one that has not been applied.
-  const forcedCount = state.doc.childCount;
-  for (let pageIndex = 0; pageIndex < forcedCount; pageIndex += 1) {
-    const plan = planForcedBreak(state.doc, pageIndex, pinned);
-    if (!plan) continue;
-    const step = applyReflow(state, plan);
-    if (!step) continue;
-    transaction = transaction ? transaction.step(step) : step;
-    moved += 1;
+  // A manual page break is honoured next, and before keep-with-next because both
+  // can move blocks across a boundary the user chose. It also cannot be detected
+  // from the layout: a page that already ends where the break is looks identical
+  // to one the break has not been applied to.
+  for (let pageIndex = 0; pageIndex < current.doc.childCount; pageIndex += 1) {
+    const plan = planForcedBreak(current.doc, pageIndex, pinned);
+    if (plan) apply(plan);
   }
 
-  // Keep-with-next is a second, independent pass, because it applies to pages
-  // that do not overflow: a page can fit its content exactly and still leave a
-  // heading stranded at the bottom, and the overflow pass above would never
-  // look at such a page. The last page is excluded because nothing follows it.
-  const pageCount = state.doc.childCount;
-  for (let pageIndex = 0; pageIndex < pageCount - 1; pageIndex += 1) {
-    const plan = planKeepWithNext(state.doc, pageIndex, pinned);
-    if (!plan) continue;
-    const step = applyReflow(state, plan);
-    if (!step) continue;
-    transaction = transaction ? transaction.step(step) : step;
-    moved += 1;
+  // Keep-with-next is a third, independent pass, because it applies to pages that
+  // do not overflow: a page can fit its content exactly and still leave a heading
+  // stranded at the bottom, and the overflow pass above would never look at such
+  // a page. The last page is excluded because nothing follows it.
+  for (let pageIndex = 0; pageIndex < current.doc.childCount - 1; pageIndex += 1) {
+    const plan = planKeepWithNext(current.doc, pageIndex, pinned);
+    if (plan) apply(plan);
   }
 
-  if (grown.length > 0) return { transaction, moved, grown };
-  if (!transaction) return null;
-  return { transaction, moved, grown };
+  if (moved === 0 && grown.length === 0) return null;
+  return { transaction: tr, moved, grown };
 }
 
 export class Paginator {
@@ -161,6 +167,8 @@ export class Paginator {
     this.onChange = onChange || (() => {});
     /** Page indices allowed to grow, so they are not re-flagged every round. */
     this.pinned = new Set();
+    /** Page count `pinned` was collected against, to detect renumbering. */
+    this.pageCount = 0;
     this.frame = 0;
     this.rounds = 0;
     this.suspended = false;
@@ -215,6 +223,16 @@ export class Paginator {
       );
       this.rounds = 0;
       return null;
+    }
+
+    // `pinned` holds page *indices*, and inserting or removing a page renumbers
+    // every page after it. A stale index then pins a page that is merely a
+    // bystander, and `planPage` and `planForcedBreak` both skip pinned pages --
+    // so pagination quietly stops for the rest of the session. Nothing else
+    // clears it except `relayout`, which is not something a user does.
+    if (this.pageCount !== state.doc.childCount) {
+      this.pinned.clear();
+      this.pageCount = state.doc.childCount;
     }
 
     const result = reflowTransaction(state, this.container, this.pinned);

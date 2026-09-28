@@ -777,3 +777,243 @@ test('an out-of-range page index is answered, not crashed on', () => {
   assert.equal(planForcedBreak(doc, 7, new Set()), null);
   assert.equal(planForcedBreak(doc, -1, new Set()), null);
 });
+// --------------------------------------------------------------------------
+// Overflow and a manual break on the same page
+// --------------------------------------------------------------------------
+
+test('an overflowing page that also has a break does not move blocks twice', () => {
+  // The regression: both passes build their plan from the same original doc and
+  // are then rebased onto each other, so a page that overflows *and* carries a
+  // break had its trailing blocks moved by the overflow pass and then again by
+  // the break pass -- duplicating them, or moving blocks that had already gone.
+  const doc = buildTypedDoc([
+    [
+      { text: 'a' },
+      { text: 'b', attrs: { breakBefore: true } },
+      { text: 'c' },
+      { text: 'd' },
+    ],
+  ]);
+  const state = buildState(doc);
+  const container = fakeContainer(1, { overflows: true, printable: 250, blockHeight: 100 });
+
+  const result = reflowTransaction(state, container, new Set());
+  assert.ok(result, 'nothing happened at all');
+  const after = state.apply(result.transaction);
+  assertValid(after.doc);
+
+  // No block may be duplicated or lost, whatever order the passes ran in.
+  const all = [];
+  for (let i = 0; i < after.doc.childCount; i += 1) {
+    blocksOf(after.doc, i).forEach((text) => all.push(text));
+  }
+  assert.deepEqual(all, ['a', 'b', 'c', 'd']);
+});
+
+test('two overflowing pages with breaks keep every block exactly once', () => {
+  const doc = buildTypedDoc([
+    [
+      { text: 'a' },
+      { text: 'b', attrs: { breakBefore: true } },
+      { text: 'c' },
+    ],
+    [
+      { text: 'd', attrs: { breakBefore: true } },
+      { text: 'e' },
+      { text: 'f' },
+    ],
+  ]);
+  const state = buildState(doc);
+  const container = fakeContainer(2, { overflows: true, printable: 250, blockHeight: 100 });
+
+  const result = reflowTransaction(state, container, new Set());
+  assert.ok(result);
+  const after = state.apply(result.transaction);
+  assertValid(after.doc);
+
+  const all = [];
+  for (let i = 0; i < after.doc.childCount; i += 1) {
+    blocksOf(after.doc, i).forEach((text) => all.push(text));
+  }
+  assert.deepEqual(all, ['a', 'b', 'c', 'd', 'e', 'f']);
+});
+
+test('a page with a break and a trailing heading does not lose either', () => {
+  const doc = buildTypedDoc([
+    [
+      { text: 'a' },
+      { text: 'b', attrs: { breakBefore: true } },
+      { type: 'heading', text: 'Section' },
+    ],
+  ]);
+  const state = buildState(doc);
+  const result = reflowTransaction(state, fakeContainer(1, { overflows: false }), new Set());
+  assert.ok(result);
+  const after = state.apply(result.transaction);
+  assertValid(after.doc);
+
+  const all = [];
+  for (let i = 0; i < after.doc.childCount; i += 1) {
+    blocksOf(after.doc, i).forEach((text) => all.push(text));
+  }
+  assert.deepEqual(all, ['a', 'b', 'Section']);
+});
+// --------------------------------------------------------------------------
+// Convergence
+//
+// The paginator re-enters `appendTransaction` for each transaction it appends,
+// so a pass that undoes another's work is not a wrong answer once -- it is a
+// document that changes on every keystroke and never settles. Reflow is run
+// here until it reports nothing, which is what the plugin does.
+test('reflow settles rather than oscillating', () => {
+  const doc = buildTypedDoc([
+    [
+      { text: 'a' },
+      { text: 'b', attrs: { breakBefore: true } },
+      { type: 'heading', text: 'Section' },
+    ],
+  ]);
+  let state = buildState(doc);
+  let rounds = 0;
+  let layout = null;
+
+  for (; rounds < 12; rounds += 1) {
+    // Each round sees a layout that matches the pages it currently has.
+    layout = fakeContainer(state.doc.childCount, { overflows: false });
+    const result = reflowTransaction(state, layout, new Set());
+    if (!result) break;
+    state = state.apply(result.transaction);
+    assertValid(state.doc);
+  }
+
+  assert.ok(rounds < 12, `reflow never settled (${rounds} rounds)`);
+  const all = [];
+  for (let i = 0; i < state.doc.childCount; i += 1) {
+    blocksOf(state.doc, i).forEach((text) => all.push(text));
+  }
+  assert.deepEqual(all, ['a', 'b', 'Section']);
+});
+
+test('a break on a page that then overflows settles too', () => {
+  const doc = buildTypedDoc([
+    [{ text: 'a' }, { text: 'b', attrs: { breakBefore: true } }, { text: 'c' }, { text: 'd' }],
+  ]);
+  let state = buildState(doc);
+  let rounds = 0;
+  for (; rounds < 12; rounds += 1) {
+    const result = reflowTransaction(
+      state,
+      fakeContainer(state.doc.childCount, { overflows: true, printable: 250, blockHeight: 100 }),
+      new Set(),
+    );
+    if (!result) break;
+    state = state.apply(result.transaction);
+    assertValid(state.doc);
+  }
+  assert.ok(rounds < 12, `reflow never settled (${rounds} rounds)`);
+  const all = [];
+  for (let i = 0; i < state.doc.childCount; i += 1) {
+    blocksOf(state.doc, i).forEach((text) => all.push(text));
+  }
+  assert.deepEqual(all, ['a', 'b', 'c', 'd']);
+});
+
+// --------------------------------------------------------------------------
+// More than one plan in a single round
+//
+// The crash: `reflowTransaction` composed its passes with
+// `transaction.step(step)`, but `Transaction.step` takes a `Step` and
+// `applyReflow` returns a `Transaction`, which has no `apply` method. One plan
+// per round was fine. A page that both overflowed and carried a manual break
+// produced two, and the second threw.
+//
+// The fakes above report every page with the same numbers, so they never reach
+// that state; this one derives the layout from the document.
+const BLOCK_H = 100;
+const PRINTABLE = 600;   // six 100px blocks fit, so a seventh overflows
+
+/** A container whose overflow and block heights come from the document. */
+function measuredContainer(doc) {
+  const ownerDocument = {
+    defaultView: { getComputedStyle: () => ({ paddingTop: '0px', paddingBottom: '0px' }) },
+  };
+  const pages = [];
+  doc.forEach((page) => {
+    const blocks = [];
+    page.forEach(() => {
+      const top = blocks.length * BLOCK_H;
+      blocks.push({ getBoundingClientRect: () => ({ top, bottom: top + BLOCK_H }) });
+    });
+    pages.push({
+      dataset: {},
+      ownerDocument,
+      children: blocks,
+      scrollHeight: page.childCount * BLOCK_H,
+      clientHeight: PRINTABLE,
+      getBoundingClientRect: () => ({ top: 0, bottom: PRINTABLE }),
+      querySelectorAll: () => [],
+    });
+  });
+  return { children: pages };
+}
+
+/** Every block's text, in document order, across all pages. */
+function allBlocks(doc) {
+  const found = [];
+  doc.forEach((page) => page.forEach((block) => found.push(block.textContent)));
+  return found;
+}
+
+test('two overflowed pages in one round do not throw', () => {
+  // Both pages shed blocks in the same round, so two plans are composed. This
+  // is the minimum shape that reaches the crash.
+  const doc = buildTypedDoc([
+    [{ text: 'a1' }, { text: 'a2' }, { text: 'a3' }, { text: 'a4' }, { text: 'a5' }, { text: 'a6' }, { text: 'a7' }],
+    [{ text: 'b1' }, { text: 'b2' }, { text: 'b3' }, { text: 'b4' }, { text: 'b5' }, { text: 'b6' }, { text: 'b7' }],
+  ]);
+  const state = buildState(doc);
+  const result = reflowTransaction(state, measuredContainer(state.doc), new Set());
+  assert.ok(result, 'nothing happened');
+  const after = state.apply(result.transaction);
+  assertValid(after.doc);
+  assert.deepEqual(allBlocks(after.doc), ['a1', 'a2', 'a3', 'a4', 'a5', 'a6', 'a7', 'b1', 'b2', 'b3', 'b4', 'b5', 'b6', 'b7']);
+});
+
+test('a page that overflows and carries a break does not throw', () => {
+  const doc = buildTypedDoc([
+    [
+      { text: 'a' },
+      { text: 'b', attrs: { breakBefore: true } },
+      { text: 'c' },
+      { text: 'd' },
+      { text: 'e' },
+      { text: 'f' },
+      { text: 'g' },
+    ],
+  ]);
+  const state = buildState(doc);
+  const result = reflowTransaction(state, measuredContainer(state.doc), new Set());
+  assert.ok(result);
+  const after = state.apply(result.transaction);
+  assertValid(after.doc);
+  assert.deepEqual(allBlocks(after.doc), ['a', 'b', 'c', 'd', 'e', 'f', 'g']);
+});
+
+test('reflow settles and preserves every block over a long document', () => {
+  const blocks = [];
+  for (let i = 0; i < 20; i += 1) blocks.push({ text: `b${i}` });
+  blocks[7] = { text: 'b7', attrs: { breakBefore: true } };
+  const expected = blocks.map((b) => b.text);
+
+  let state = buildState(buildTypedDoc([blocks]));
+  let rounds = 0;
+  for (; rounds < 40; rounds += 1) {
+    const result = reflowTransaction(state, measuredContainer(state.doc), new Set());
+    if (!result) break;
+    state = state.apply(result.transaction);
+    assertValid(state.doc);
+  }
+  assert.ok(rounds < 40, `reflow never settled (${rounds} rounds)`);
+  assert.deepEqual(allBlocks(state.doc), expected);
+  assert.ok(state.doc.childCount > 1, 'a 20-block document produced one page');
+});
